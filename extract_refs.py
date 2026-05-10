@@ -14,14 +14,16 @@ Output:
 
 import sys
 import json
+import argparse
 import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime
 
+from _config import load_config, user_agent_from, warn_if_placeholder_mailto
+
 
 API_BASE = "https://api.crossref.org/works"
-USER_AGENT = "RefDownloader/1.0 (mailto:academic-tool@example.com)"
 
 
 def doi_to_project_name(doi: str) -> str:
@@ -29,10 +31,10 @@ def doi_to_project_name(doi: str) -> str:
     return doi.split("/")[-1].replace(":", "_").replace("?", "_")
 
 
-def fetch_crossref(doi: str) -> dict:
+def fetch_crossref(doi: str, user_agent: str) -> dict:
     """Fetch metadata for a single DOI from Crossref API."""
     url = f"{API_BASE}/{urllib.request.quote(doi, safe='')}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())["message"]
@@ -43,10 +45,10 @@ def fetch_crossref(doi: str) -> dict:
         raise
 
 
-def extract_references(parent_doi: str) -> dict:
+def extract_references(parent_doi: str, user_agent: str) -> dict:
     """Extract reference list from a parent paper's Crossref entry."""
     print(f"Fetching parent paper: {parent_doi}")
-    parent = fetch_crossref(parent_doi)
+    parent = fetch_crossref(parent_doi, user_agent)
 
     if not parent:
         print("ERROR: Parent DOI not found in Crossref.")
@@ -96,30 +98,47 @@ def extract_references(parent_doi: str) -> dict:
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python extract_refs.py <parent_doi>")
-        print("Example: python extract_refs.py 10.1021/jacs.5c05017")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Extract reference DOIs via Crossref.")
+    parser.add_argument("parent_doi", help="Parent paper DOI (e.g. 10.1021/jacs.5c05017)")
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Non-interactive: overwrite refs_raw.json without asking.",
+    )
+    args = parser.parse_args()
 
-    parent_doi = sys.argv[1].strip()
+    cfg = load_config()
+    warn_if_placeholder_mailto(cfg)
+    user_agent = user_agent_from(cfg, "RefDownloader/1.0")
+
+    parent_doi = args.parent_doi.strip()
     project_name = doi_to_project_name(parent_doi)
     project_dir = Path(project_name)
     output_path = project_dir / "refs_raw.json"
 
     # Incremental: check if output already exists
     if output_path.exists():
-        print(f"WARNING: {output_path} already exists.")
-        answer = input("  Overwrite? [y/N] ").strip().lower()
-        if answer != "y":
-            print("Aborted.")
-            sys.exit(0)
+        if args.yes:
+            print(f"WARNING: {output_path} exists; --yes given, overwriting.")
+        elif not sys.stdin.isatty():
+            print(
+                f"ERROR: {output_path} exists and stdin is not a TTY; "
+                "refusing to overwrite. Pass --yes to force."
+            )
+            sys.exit(2)
+        else:
+            print(f"WARNING: {output_path} already exists.")
+            answer = input("  Overwrite? [y/N] ").strip().lower()
+            if answer != "y":
+                print("Aborted.")
+                sys.exit(0)
 
     # Create project directory
     project_dir.mkdir(exist_ok=True)
     print(f"Project directory: {project_dir}/\n")
 
     # Extract
-    result = extract_references(parent_doi)
+    result = extract_references(parent_doi, user_agent)
 
     # Save
     with open(output_path, "w", encoding="utf-8") as f:
