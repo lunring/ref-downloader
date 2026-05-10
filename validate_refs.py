@@ -23,8 +23,9 @@ import urllib.error
 from pathlib import Path
 from datetime import datetime
 
+from _config import load_config, user_agent_from, warn_if_placeholder_mailto
+
 API_BASE = "https://api.crossref.org/works"
-USER_AGENT = "RefDownloader/1.0 (mailto:academic-tool@example.com)"
 RATE_LIMIT_DELAY = 0.35  # seconds between API calls (Crossref polite pool)
 
 # DOI prefix → publisher key
@@ -166,10 +167,10 @@ def make_label(first_author: str, year: int, journal: str) -> str:
     return f"{author}{year}_{j_short}"
 
 
-def fetch_metadata(doi: str) -> dict:
+def fetch_metadata(doi: str, user_agent: str) -> dict:
     """Fetch full metadata for a DOI from Crossref. Returns {} on failure."""
     url = f"{API_BASE}/{urllib.request.quote(doi, safe='')}"
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read())["message"]
@@ -192,7 +193,7 @@ def extract_year(msg: dict) -> int:
     return 0
 
 
-def validate_one(ref: dict) -> dict:
+def validate_one(ref: dict, user_agent: str) -> dict:
     """Validate a single reference and enrich with metadata."""
     doi = ref.get("doi")
     ref_id = ref["id"]
@@ -211,7 +212,7 @@ def validate_one(ref: dict) -> dict:
             "error": "No DOI available in Crossref reference data",
         }
 
-    msg = fetch_metadata(doi)
+    msg = fetch_metadata(doi, user_agent)
 
     if not msg:
         return {
@@ -288,6 +289,10 @@ def main():
         print("Example: python validate_refs.py jacs.5c05017")
         sys.exit(1)
 
+    cfg = load_config()
+    warn_if_placeholder_mailto(cfg)
+    user_agent = user_agent_from(cfg, "RefDownloader/1.0")
+
     project_dir, raw_path, validated_path = resolve_input(sys.argv[1])
 
     print(f"Project: {project_dir}")
@@ -332,7 +337,7 @@ def main():
             skipped += 1
             continue
 
-        result = validate_one(ref)
+        result = validate_one(ref, user_agent)
         results.append(result)
 
         status = result["status"]
