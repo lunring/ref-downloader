@@ -16,16 +16,15 @@
 
 ## Highlights / 亮点
 
+Each row: **what you get** — *the differentiator that delivers it*.
+
 | English | 中文 |
 |---|---|
-| **Drives your real Microsoft Edge profile** — paywalled refs use your institutional cookies, not a fresh sandbox | **使用真实 Edge 浏览器配置** — 复用你的登录会话与机构 cookie，付费内容自然可下 |
-| **Publisher-specific strategies for 17+ publishers** — Wiley PDFDirect, Elsevier viewer, AIP/AVS loading-page wait — not generic scraping | **17+ 出版商专用下载策略** — Wiley PDFDirect、Elsevier viewer、AIP/AVS 加载页等待，不是通用爬虫 |
-| **Institution-SSO aware** — configurable auth-redirect detection; refs bouncing to login are tagged `manual_pending` for interactive approval | **机构 SSO 感知** — 可配置的认证跳转检测；被弹到登录页的条目标 `manual_pending` 等你交互处理 |
-| **Crossref-driven** — feed one DOI; the tool discovers the parent paper's full reference list automatically | **Crossref 驱动** — 输入一个 DOI，自动发现父论文的完整参考列表 |
-| **Resumable & incremental** — rerunning on the same project skips already-downloaded refs and only retries failures | **可断点续跑** — 同项目重跑自动跳过已下载条目，只重试失败 |
-| **Per-reference reporting** — `download_report.csv` + `events.jsonl` give status, failure reason, and SI capture for every ref | **逐条状态报告** — `download_report.csv` + `events.jsonl` 给出每篇主 PDF / SI 状态与失败原因 |
-| **Three-stage pipeline + single-entry wrapper** — extract → validate → download, each script is independently restartable for debugging | **三段流水线 + 单入口 wrapper** — extract → validate → download，每一步都能独立重跑调试 |
-| **TOML-configurable, ENV-overridable** — `config.local.toml` for personal values; `REF_DOWNLOADER_*` env vars override for CI / containers | **TOML 配置 + 环境变量覆盖** — `config.local.toml` 存私人值，`REF_DOWNLOADER_*` 环境变量适合 CI / 容器 |
+| **One DOI in, every reference out.** No manual click-through 50 PDFs — *17+ publisher-specific download paths (Wiley PDFDirect, Elsevier viewer, AIP loading-page wait), not generic scraping.* | **一个 DOI 输入，全部参考文献输出。** 不用逐篇手动点 —— *内置 17+ 家出版商专用路径（Wiley PDFDirect、Elsevier viewer、AIP 加载页等待），不是通用爬虫。* |
+| **Paywalled refs work out of the box** — *driven by your real Microsoft Edge profile, so any institutional login already in your browser carries through. No API keys, no proxies, no reverse engineering.* | **机构付费内容免配置直接可下** —— *直接驱动你真实的 Microsoft Edge 配置文件，Edge 里登录过的会话自然继承。不需要 API key、代理、或逆向工程。* |
+| **You always know which refs failed and why.** *`download_report.csv` gives every ref a status + reason (`manual_pending (auth_redirect)`, `failed (challenge_timeout)`, `ignored`); `events.jsonl` keeps the per-ref event trace.* | **失败的条目和原因一目了然。** *`download_report.csv` 给每篇参考文献状态 + 原因（`manual_pending (auth_redirect)`、`failed (challenge_timeout)`、`ignored`），`events.jsonl` 留每篇的事件流。* |
+| **Pick up where you left off** after a VPN drop, browser crash, or `Ctrl+C`. *State persists per project; rerunning skips already-downloaded refs and retries only the failures.* | **断点续跑**：VPN 断、浏览器崩、`Ctrl+C` 后都能继续。 *状态按项目目录持久化；重跑自动跳过已下载、只重试失败。* |
+| **Adapts to your institution without touching code.** *A `[institution]` config slot lets you teach SSO hosts, auth-page titles, and known-paywalled DOIs — institution-bound knowledge stays in your local TOML, not in source.* | **贴合你的机构，无需改代码。** *`[institution]` 配置位让你把 SSO 主机、认证页标题、已知无权限的 DOI 告诉工具 —— 机构相关的知识留在你本地 TOML，不进源代码。* |
 
 ---
 
