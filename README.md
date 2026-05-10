@@ -1,10 +1,7 @@
 # ref-downloader
 
-> Batch-download every reference of a paper from a single DOI, using your real
-> Microsoft Edge profile so institutional access just works.
->
-> 输入一篇论文的 DOI，自动批量下载它的全部参考文献；用你真实的 Microsoft Edge
-> 配置文件，机构权限自然可用。
+> **Stop spending 3 hours hunting 50 PDFs for your literature review.**
+> One DOI in, every reference PDF out — using your existing institutional access.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -12,61 +9,80 @@
 
 [中文完整文档 / Full Chinese version](README.zh.md)
 
----
+> **Heads up — not a paywall bypass.** ref-downloader uses _your_ institutional access. If your university or organization subscribes to a journal, those refs work. If they don't, those refs become `manual_pending` for you to follow up on by hand.
 
-## Highlights / 亮点
+## Demo (30-second console preview)
 
-Each row: **what you get** — *the differentiator that delivers it*.
+```text
+$ python run_ref_downloader.py 10.1021/jacs.5c05017
 
-| English | 中文 |
-|---|---|
-| **One DOI in, every reference out.** No manual click-through 50 PDFs — *17+ publisher-specific download paths (Wiley PDFDirect, Elsevier viewer, AIP loading-page wait), not generic scraping.* | **一个 DOI 输入，全部参考文献输出。** 不用逐篇手动点 —— *内置 17+ 家出版商专用路径（Wiley PDFDirect、Elsevier viewer、AIP 加载页等待），不是通用爬虫。* |
-| **Paywalled refs work out of the box** — *driven by your real Microsoft Edge profile, so any institutional login already in your browser carries through. No API keys, no proxies, no reverse engineering.* | **机构付费内容免配置直接可下** —— *直接驱动你真实的 Microsoft Edge 配置文件，Edge 里登录过的会话自然继承。不需要 API key、代理、或逆向工程。* |
-| **You always know which refs failed and why.** *`download_report.csv` gives every ref a status + reason (`manual_pending (auth_redirect)`, `failed (challenge_timeout)`, `ignored`); `events.jsonl` keeps the per-ref event trace.* | **失败的条目和原因一目了然。** *`download_report.csv` 给每篇参考文献状态 + 原因（`manual_pending (auth_redirect)`、`failed (challenge_timeout)`、`ignored`），`events.jsonl` 留每篇的事件流。* |
-| **Pick up where you left off** after a VPN drop, browser crash, or `Ctrl+C`. *State persists per project; rerunning skips already-downloaded refs and retries only the failures.* | **断点续跑**：VPN 断、浏览器崩、`Ctrl+C` 后都能继续。 *状态按项目目录持久化；重跑自动跳过已下载、只重试失败。* |
-| **Adapts to your institution without touching code.** *A `[institution]` config slot lets you teach SSO hosts, auth-page titles, and known-paywalled DOIs — institution-bound knowledge stays in your local TOML, not in source.* | **贴合你的机构，无需改代码。** *`[institution]` 配置位让你把 SSO 主机、认证页标题、已知无权限的 DOI 告诉工具 —— 机构相关的知识留在你本地 TOML，不进源代码。* |
+=== Ref Downloader Wrapper ===
+DOI:         10.1021/jacs.5c05017
+PROJECT:     jacs.5c05017
+Config:      config.example.toml + config.local.toml
 
----
+>>> extract_refs.py
+  Title: Designing Natural Cell-Inspired Heme-Spurred Membrane...
+  References found: 38
 
-## What it does
+>>> validate_refs.py
+  Total: 38  Verified: 38  Failed: 0  No DOI: 0
 
-You give it the DOI of one paper. It fetches that paper's reference list from
-Crossref (~30–80 references for a typical chemistry/physics paper), validates
-each DOI, classifies them by publisher, then drives Microsoft Edge to download
-each PDF (and supplementary files where supported) using publisher-specific
-strategies.
+>>> download_refs.py
+  [ 1] downloaded (842 KB)        Lee2016_NatEnergy.pdf
+  [ 2] downloaded (1.2 MB)        Wang2018_AdvMater.pdf
+  [ 3] manual_pending (auth_redirect)
+  [ 4] downloaded (655 KB)        Chen2019_JACS.pdf
+  ... 33 more refs processed ...
+  [38] downloaded (956 KB)        Park2024_JElectrochemSoc.pdf
 
-Output: one folder per parent paper, containing each reference's PDF + a
-`download_report.csv` summarizing per-reference status. Failed downloads are
-labeled with the failure reason (e.g. `manual_pending (auth_redirect)`,
-`failed (challenge_timeout)`) so you know where to follow up by hand.
+========== Download report ==========
+Total references:  38
+Main PDFs:         33 downloaded · 4 manual_pending · 1 ignored
+SI files:          12 captured
+PDFs land in:      ./jacs.5c05017_refs/jacs.5c05017/
+=====================================
+```
 
-## Why use this
+## Contents
 
-Manual reference downloading is tedious for literature reviews. This tool:
+- [What you get](#what-you-get)
+- [Why this and not Zotero / scihub / generic scrapers?](#why-this-and-not-zotero--scihub--generic-scrapers)
+- [Quick start](#quick-start) · [Requirements](#requirements) · [Install](#install) · [Usage examples](#usage-examples)
+- [Configuration](#configuration) · [Architecture](#architecture) · [Supported publishers](#supported-publishers)
+- [Known limitations](#known-limitations) · [Contributing](#contributing) · [Security](#security) · [License](#license)
 
-- **Tries the right thing per publisher**: direct PDF URL where available
-  (Springer, RSC, ACS), JS-discovered click flow where required (Wiley
-  PDFDirect, Elsevier viewer)
-- **Handles institutional SSO redirects** without crashing — auth-redirect
-  refs become `manual_pending`, ready for you to approve interactively
-- **Resumes incrementally**: rerun on the same project and already-downloaded
-  refs are skipped
+## What you get
 
-It is **not** a paywall bypass. References that need institutional access
-require you to be on a network with that access, or signed in to your
-institution's SSO via the Edge profile.
+- **Paywalled refs work without setup.** _Drives your real Microsoft Edge profile, so any institutional login already in your browser carries through. No API keys, no proxies, no reverse engineering._
+- **One DOI in, every reference PDF out.** _Crossref-driven extraction + 17+ publisher-specific download paths (Wiley PDFDirect, Elsevier viewer, AIP loading-page wait — see [per-publisher reliability tier](docs/SUPPORTED_PUBLISHERS.md)), not generic scraping._
+- **You always know which refs failed and why.** _`download_report.csv` gives every ref a status + reason (`manual_pending (auth_redirect)`, `failed (challenge_timeout)`, `ignored`); `events.jsonl` keeps the per-ref event trace._
+- **Pick up where you left off** after a VPN drop, browser crash, or `Ctrl+C`. _State persists per project; rerunning skips already-downloaded refs and retries only the failures._
+
+## Why this and not Zotero / scihub / generic scrapers?
+
+- **vs. Zotero's _Find Available PDF_** — walks one paper at a time and silently gives up at SSO redirects. ref-downloader walks the whole reference list at once and treats SSO as a configurable step instead of a dead end.
+- **vs. scihub-style tools** — don't carry your institutional license, so paywalled refs you _legitimately_ have access to just fail. ref-downloader uses your authenticated browser session, so subscriptions you already pay for actually count.
+- **vs. generic web scrapers** — don't know Wiley needs PDFDirect, Elsevier needs a viewer click, or AIP serves a Chinese loading page first. ref-downloader has 17+ publisher-specific paths plus hot-session retry for Elsevier.
+
+## Quick start
+
+```powershell
+git clone <REPO_URL> && cd ref-downloader
+pip install -r requirements.txt && playwright install msedge
+cp config.example.toml config.local.toml      # then set [crossref].mailto
+python run_ref_downloader.py 10.1021/jacs.5c05017
+```
+
+That's the happy path. Details below.
 
 ## Requirements
 
 - **OS**: Windows 10/11 (verified). macOS / Linux untested — PRs welcome.
-- **Browser**: Microsoft Edge (Stable channel). The script claims your
-  persistent Edge profile, so close all Edge windows before running.
+- **Browser**: Microsoft Edge (Stable channel). The script claims your persistent Edge profile, so close all Edge windows before running.
 - **Python**: 3.11 or newer (uses stdlib `tomllib`).
-- **Optional**: A Zotero installation (auto-detects DOI from a PDF's filename
-  via Zotero's SQLite database — much faster than text extraction).
-- **Optional**: PyMuPDF (`pip install pymupdf`) for DOI extraction from PDF
-  text when Zotero lookup is unavailable.
+- **Optional**: A Zotero installation (auto-detects DOI from a PDF's filename via Zotero's SQLite database — much faster than text extraction).
+- **Optional**: PyMuPDF (`pip install pymupdf`) for DOI extraction from PDF text when Zotero lookup is unavailable.
 
 ## Install
 
@@ -83,7 +99,7 @@ cp config.example.toml config.local.toml
 # macOS / Linux: $EDITOR config.local.toml   (or vim / nano / code / ...)
 ```
 
-## Quick start
+## Usage examples
 
 ### Input: a DOI
 
@@ -121,8 +137,7 @@ python run_ref_downloader.py 10.1021/jacs.5c05017 --config ./alt.toml
 
 ## Configuration
 
-All configuration lives in `config.local.toml` (gitignored). Copy
-`config.example.toml` to bootstrap.
+All configuration lives in `config.local.toml` (gitignored). Copy `config.example.toml` to bootstrap.
 
 | Section | Key | Purpose |
 |---|---|---|
@@ -159,36 +174,21 @@ run_ref_downloader.py   # entry point — config loading, DOI resolution, sequen
   └─> download_refs.py    (3) Playwright/Edge: download main PDF + SI per publisher
 ```
 
-You can also run the three scripts manually for debugging or partial restarts.
-See [SKILL.md](SKILL.md) for the manual flow.
+You can also run the three scripts manually for debugging or partial restarts. See [SKILL.md](SKILL.md) for the manual flow.
 
 ## Supported publishers
 
-ACS, Nature, Science, Elsevier, Wiley, RSC, Springer, PNAS, ECS, IOP, AIP,
-AVS, IEEE, OSA, KPS, Beilstein, APS, Annual Reviews, Taylor & Francis.
-Maturity varies — see [`docs/SUPPORTED_PUBLISHERS.md`](docs/SUPPORTED_PUBLISHERS.md)
-for the per-publisher tier table and known limitations.
+ACS, Nature, Science, Elsevier, Wiley, RSC, Springer, PNAS, ECS, IOP, AIP, AVS, IEEE, OSA, KPS, Beilstein, APS, Annual Reviews, Taylor & Francis. Maturity varies — see [`docs/SUPPORTED_PUBLISHERS.md`](docs/SUPPORTED_PUBLISHERS.md) for the per-publisher tier table and known issues.
 
 ## Known limitations
 
-- **Windows + Microsoft Edge only**: that's the verified path. macOS / Linux /
-  Chromium support has not been tested. If you try, please open an issue with
-  results.
-- **Headed mode required**: empirically, `headless=True` yields empty results
-  for Wiley / ACS supplementary downloads. The default is headed.
-- **Edge must be fully closed before running**: Playwright needs exclusive
-  access to the persistent profile. Check Task Manager for any background
-  `msedge.exe` processes.
-- **SSO redirects are detected, not solved**: when the script bounces to your
-  institution's SSO, the ref becomes `manual_pending` so you can sign in
-  interactively. Configure `[institution]` to teach it which redirects to
-  recognize.
-- **SI download is the most fragile path**: main PDFs are reliable; SI lookup
-  varies by publisher and is the area most likely to need a tweak when a
-  publisher updates their site.
+- **Windows + Microsoft Edge only**: that's the verified path. macOS / Linux / Chromium support has not been tested. If you try, please open an issue with results.
+- **Headed mode required**: empirically, `headless=True` yields empty results for Wiley / ACS supplementary downloads. The default is headed.
+- **Edge must be fully closed before running**: Playwright needs exclusive access to the persistent profile. Check Task Manager for any background `msedge.exe` processes.
+- **SSO redirects are detected, not solved**: when the script bounces to your institution's SSO, the ref becomes `manual_pending` so you can sign in interactively. Configure `[institution]` to teach it which redirects to recognize.
+- **SI download is the most fragile path**: main PDFs are reliable; SI lookup varies by publisher and is the area most likely to need a tweak when a publisher updates their site.
 - **Paywalled content needs institutional access**: this is not a bypass tool.
-- **Crossref dependency**: papers with no reference list deposited at Crossref
-  can't be processed automatically.
+- **Crossref dependency**: papers with no reference list deposited at Crossref can't be processed automatically.
 
 ## Contributing
 
@@ -199,9 +199,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidance on:
 
 ## Security
 
-This tool launches your real Edge profile, with all your cookies and saved
-sessions. Read [SECURITY.md](SECURITY.md) before running it against a profile
-you also use for daily browsing.
+This tool launches your real Edge profile, with all your cookies and saved sessions. Read [SECURITY.md](SECURITY.md) before running it against a profile you also use for daily browsing.
 
 ## License
 

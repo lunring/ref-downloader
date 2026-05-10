@@ -1,10 +1,7 @@
 # ref-downloader
 
-> 输入一篇论文的 DOI，自动批量下载它的全部参考文献；用你真实的 Microsoft Edge
-> 配置文件，机构权限自然可用。
->
-> Batch-download every reference of a paper from a single DOI, using your real
-> Microsoft Edge profile so institutional access just works.
+> **别再为综述手动追 50 篇参考文献 PDF。**
+> 输入一个 DOI，全部参考文献自动到手——用你已有的机构访问权。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -12,49 +9,77 @@
 
 [English full version](README.md)
 
----
+> **重要——不是付费墙绕过工具。** ref-downloader 用的是 _你_ 的机构访问权。如果你的学校/单位订阅了某期刊，那条参考文献就能下；如果没订阅，那条会标 `manual_pending` 等你手动跟进。
 
-## 亮点 / Highlights
+## 演示（30 秒控制台预览）
 
-每行结构：**给你的价值** —— *靠什么差异化做到的*。
+```text
+$ python run_ref_downloader.py 10.1021/jacs.5c05017
 
-| 中文 | English |
-|---|---|
-| **一个 DOI 输入，全部参考文献输出。** 不用逐篇手动点 —— *内置 17+ 家出版商专用路径（Wiley PDFDirect、Elsevier viewer、AIP 加载页等待），不是通用爬虫。* | **One DOI in, every reference out.** No manual click-through 50 PDFs — *17+ publisher-specific download paths (Wiley PDFDirect, Elsevier viewer, AIP loading-page wait), not generic scraping.* |
-| **机构付费内容免配置直接可下** —— *直接驱动你真实的 Microsoft Edge 配置文件，Edge 里登录过的会话自然继承。不需要 API key、代理、或逆向工程。* | **Paywalled refs work out of the box** — *driven by your real Microsoft Edge profile, so any institutional login already in your browser carries through. No API keys, no proxies, no reverse engineering.* |
-| **失败的条目和原因一目了然。** *`download_report.csv` 给每篇参考文献状态 + 原因（`manual_pending (auth_redirect)`、`failed (challenge_timeout)`、`ignored`），`events.jsonl` 留每篇的事件流。* | **You always know which refs failed and why.** *`download_report.csv` gives every ref a status + reason (`manual_pending (auth_redirect)`, `failed (challenge_timeout)`, `ignored`); `events.jsonl` keeps the per-ref event trace.* |
-| **断点续跑**：VPN 断、浏览器崩、`Ctrl+C` 后都能继续。 *状态按项目目录持久化；重跑自动跳过已下载、只重试失败。* | **Pick up where you left off** after a VPN drop, browser crash, or `Ctrl+C`. *State persists per project; rerunning skips already-downloaded refs and retries only the failures.* |
-| **贴合你的机构，无需改代码。** *`[institution]` 配置位让你把 SSO 主机、认证页标题、已知无权限的 DOI 告诉工具 —— 机构相关的知识留在你本地 TOML，不进源代码。* | **Adapts to your institution without touching code.** *A `[institution]` config slot lets you teach SSO hosts, auth-page titles, and known-paywalled DOIs — institution-bound knowledge stays in your local TOML, not in source.* |
+=== Ref Downloader Wrapper ===
+DOI:         10.1021/jacs.5c05017
+PROJECT:     jacs.5c05017
+Config:      config.example.toml + config.local.toml
 
----
+>>> extract_refs.py
+  Title: Designing Natural Cell-Inspired Heme-Spurred Membrane...
+  References found: 38
 
-## 它做什么
+>>> validate_refs.py
+  Total: 38  Verified: 38  Failed: 0  No DOI: 0
 
-提供一篇论文的 DOI，工具会从 Crossref 拉取它的参考文献列表（化学/物理论文通常 30-80 篇），
-逐条验证 DOI、按出版商分类，然后驱动 Microsoft Edge 用各出版商对应的策略下载主文 PDF
-（部分出版商也下载 SI）。
+>>> download_refs.py
+  [ 1] downloaded (842 KB)        Lee2016_NatEnergy.pdf
+  [ 2] downloaded (1.2 MB)        Wang2018_AdvMater.pdf
+  [ 3] manual_pending (auth_redirect)
+  [ 4] downloaded (655 KB)        Chen2019_JACS.pdf
+  ... 还有 33 篇 ...
+  [38] downloaded (956 KB)        Park2024_JElectrochemSoc.pdf
 
-输出：每篇论文一个目录，里面是各参考文献 PDF + `download_report.csv` 状态摘要。
-失败的下载会标注原因（如 `manual_pending (auth_redirect)` / `failed (challenge_timeout)`），
-方便你定位需要手动处理的条目。
+========== Download report ==========
+Total references:  38
+Main PDFs:         33 downloaded · 4 manual_pending · 1 ignored
+SI files:          12 captured
+PDFs land in:      ./jacs.5c05017_refs/jacs.5c05017/
+=====================================
+```
 
-## 为什么用
+## 目录
 
-写综述时手动一篇篇下太费劲。本工具：
+- [给你的价值](#给你的价值)
+- [为什么不用 Zotero / scihub / 通用爬虫？](#为什么不用-zotero--scihub--通用爬虫)
+- [快速开始](#快速开始) · [系统要求](#系统要求) · [安装](#安装) · [使用示例](#使用示例)
+- [配置](#配置) · [架构](#架构) · [已支持出版商](#已支持出版商)
+- [已知限制](#已知限制) · [贡献](#贡献) · [安全](#安全) · [License](#license)
 
-- **按出版商选对的策略**：能直链就直链（Springer / RSC / ACS），需要点击流程就跑（Wiley
-  PDFDirect / Elsevier viewer）
-- **认得机构 SSO 跳转**：撞到学校认证页时不会崩，标 `manual_pending` 让你交互登录后重跑
-- **支持增量恢复**：同一个项目目录重跑会自动跳过已下载的条目
+## 给你的价值
 
-它**不是**绕过付费墙的工具。需要机构权限的文章，仍需你处于有访问权的网络环境，
-或在 Edge profile 里登录过学校 SSO。
+- **机构付费内容免配置就能下。** _直接驱动你真实的 Microsoft Edge 配置文件，浏览器里登录过的会话自然继承。不要 API key、不要代理、不需逆向工程。_
+- **一个 DOI 输入，全部参考文献 PDF 输出。** _Crossref 驱动 + 17+ 家出版商专用下载路径（Wiley PDFDirect、Elsevier viewer、AIP 加载页等待——见 [出版商可靠度分级表](docs/SUPPORTED_PUBLISHERS.md)），不是通用爬虫。_
+- **失败的条目和原因一目了然。** _`download_report.csv` 给每篇参考文献状态 + 原因（`manual_pending (auth_redirect)`、`failed (challenge_timeout)`、`ignored`），`events.jsonl` 留每篇的事件流。_
+- **断点续跑**：VPN 断、浏览器崩、`Ctrl+C` 后都能继续。 _状态按项目目录持久化；重跑自动跳过已下载、只重试失败。_
+
+## 为什么不用 Zotero / scihub / 通用爬虫？
+
+- **vs. Zotero 的 _Find Available PDF_** —— 它一篇一篇走，碰到 SSO 跳转就放弃。ref-downloader 整个参考列表批量走，把 SSO 跳转当成可配置步骤而不是死路。
+- **vs. scihub 类工具** —— 不带你的机构 license，本来你 _合法_ 有权限的付费内容也直接失败。ref-downloader 复用你浏览器里的认证会话，你已经付费的订阅真的算数。
+- **vs. 通用网络爬虫** —— 不知道 Wiley 要走 PDFDirect、Elsevier 要点 viewer、AIP 服务器先返中文加载页。ref-downloader 内置 17+ 出版商专用路径 + Elsevier 热会话重试。
+
+## 快速开始
+
+```powershell
+git clone <REPO_URL> && cd ref-downloader
+pip install -r requirements.txt && playwright install msedge
+cp config.example.toml config.local.toml      # 然后改 [crossref].mailto
+python run_ref_downloader.py 10.1021/jacs.5c05017
+```
+
+这是 happy path。详细安装与配置见下方。
 
 ## 系统要求
 
 - **操作系统**：Windows 10/11（已验证）。macOS / Linux 未测试，欢迎 PR。
-- **浏览器**：Microsoft Edge（Stable channel）。脚本会接管你的持久 Edge profile，
-  运行前请关闭所有 Edge 窗口。
+- **浏览器**：Microsoft Edge（Stable channel）。脚本会接管你的持久 Edge profile，运行前请关闭所有 Edge 窗口。
 - **Python**：3.11 或更新（用了标准库 `tomllib`）。
 - **可选**：Zotero 安装（自动从 PDF 文件名查 DOI，速度比文本提取快很多）。
 - **可选**：PyMuPDF（`pip install pymupdf`），用于 Zotero 不可用时从 PDF 文本提取 DOI。
@@ -74,7 +99,7 @@ cp config.example.toml config.local.toml
 # macOS / Linux: $EDITOR config.local.toml   (或 vim / nano / code 等)
 ```
 
-## 快速开始
+## 使用示例
 
 ### 输入：一个 DOI
 
@@ -153,22 +178,15 @@ run_ref_downloader.py   # 入口：加载配置、解析 DOI、串行调度
 
 ## 已支持出版商
 
-ACS、Nature、Science、Elsevier、Wiley、RSC、Springer、PNAS、ECS、IOP、AIP、
-AVS、IEEE、OSA、KPS、Beilstein、APS、Annual Reviews、Taylor & Francis。
-成熟度因出版商而异，详细分级表与已知问题见
-[`docs/SUPPORTED_PUBLISHERS.md`](docs/SUPPORTED_PUBLISHERS.md)。
+ACS、Nature、Science、Elsevier、Wiley、RSC、Springer、PNAS、ECS、IOP、AIP、AVS、IEEE、OSA、KPS、Beilstein、APS、Annual Reviews、Taylor & Francis。成熟度因出版商而异，详细分级表与已知问题见 [`docs/SUPPORTED_PUBLISHERS.md`](docs/SUPPORTED_PUBLISHERS.md)。
 
 ## 已知限制
 
-- **仅在 Windows + Edge 验证过**：macOS / Linux / Chromium 未测试。如果你尝试了，
-  欢迎在 issues 里反馈结果。
+- **仅在 Windows + Edge 验证过**：macOS / Linux / Chromium 未测试。如果你尝试了，欢迎在 issues 里反馈结果。
 - **必须 headed 模式**：实测 `headless=True` 时 Wiley / ACS 的 SI 下载会返空结果。默认 headed。
-- **运行前 Edge 必须完全关闭**：Playwright 需独占持久 profile。任务管理器里
-  `msedge.exe` 后台进程也要 kill。
-- **SSO 跳转能识别但不会自动登录**：撞到学校 SSO 时该篇标 `manual_pending`，需要你
-  交互登录。配置 `[institution]` 段告诉脚本你学校的 SSO 特征。
-- **SI 下载是最脆弱的路径**：主文 PDF 比较稳；SI 路径每个出版商不一样，是最容易因
-  出版商页面更新而需要调整的地方。
+- **运行前 Edge 必须完全关闭**：Playwright 需独占持久 profile。任务管理器里 `msedge.exe` 后台进程也要 kill。
+- **SSO 跳转能识别但不会自动登录**：撞到学校 SSO 时该篇标 `manual_pending`，需要你交互登录。配置 `[institution]` 段告诉脚本你学校的 SSO 特征。
+- **SI 下载是最脆弱的路径**：主文 PDF 比较稳；SI 路径每个出版商不一样，是最容易因出版商页面更新而需要调整的地方。
 - **付费内容需要机构访问权**：本工具不绕过付费墙。
 - **依赖 Crossref 的 reference 数据**：如果某出版商没有把参考列表存进 Crossref，工具无法自动处理。
 
@@ -181,8 +199,7 @@ AVS、IEEE、OSA、KPS、Beilstein、APS、Annual Reviews、Taylor & Francis。
 
 ## 安全
 
-工具会启动你的真实 Edge profile，含所有 cookie 和已登录会话。在用日常浏览的 profile
-跑之前请阅读 [SECURITY.md](SECURITY.md)。
+工具会启动你的真实 Edge profile，含所有 cookie 和已登录会话。在用日常浏览的 profile 跑之前请阅读 [SECURITY.md](SECURITY.md)。
 
 ## License
 
