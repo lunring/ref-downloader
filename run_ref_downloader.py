@@ -169,6 +169,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Non-interactive mode: assume yes to overwrite prompts. Use for CI / batch runs.",
     )
+    parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Forward to download_refs.py: skip the 'press Enter to confirm Edge is closed' prompt and use shorter challenge wait. Pairs naturally with --yes for fully unattended runs.",
+    )
     return parser.parse_args()
 
 
@@ -194,15 +199,16 @@ def main() -> None:
     if cfg.source_files:
         print(f"Config:      {' + '.join(cfg.source_files)}")
 
-    extra_args = ["--yes"] if args.yes else []
+    extract_extra_args = ["--yes"] if args.yes else []
+    download_extra_args = ["--auto"] if args.auto else []
 
     if raw_path.exists():
         print(f"\n>>> Reusing existing raw refs: {raw_path}")
     else:
-        run_step("extract_refs.py", [doi, *extra_args], output_dir)
+        run_step("extract_refs.py", [doi, *extract_extra_args], output_dir)
 
     run_step("validate_refs.py", [project_name], output_dir)
-    run_step("download_refs.py", [project_name], output_dir)
+    run_step("download_refs.py", [project_name, *download_extra_args], output_dir)
 
     cleanup_output_dir_root(output_dir)
     print("\n✓ Wrapper finished.")

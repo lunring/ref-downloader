@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Refactor a copied-but-untouched-original Python skill into a GitHub-ready open-source project: replace all private/institutional info with config-driven values, add bilingual docs, license, issue templates, and verification gates — without modifying the source skill at `C:\Users\Link\.agents\skills\ref-downloader\`.
+**Goal:** Refactor a copied-but-untouched-original Python skill into a GitHub-ready open-source project: replace all private/institutional info with config-driven values, add bilingual docs, license, issue templates, and verification gates — without modifying the source skill at `<original-skill-dir>\`.
 
-**Architecture:** Three-layer config (env vars > `config.local.toml` > `config.example.toml` > built-in fallback), loaded once at wrapper entry and threaded through all four scripts via a `_config.py` dataclass. Personal/PKU strings — both at module-level constants and at five inline checks scattered through `download_refs.py` — read from config instead.
+**Architecture:** Three-layer config (env vars > `config.local.toml` > `config.example.toml` > built-in fallback), loaded once at wrapper entry and threaded through all four scripts via a `_config.py` dataclass. Personal/institution-specific strings — both at module-level constants and at five inline checks scattered through `download_refs.py` — read from config instead.
 
 **Tech Stack:** Python 3.11, stdlib `tomllib`, dataclasses; existing dependencies unchanged (Playwright, Crossref, optional PyMuPDF).
 
-**Working dir:** `C:\Users\Link\projects\ref-downloader\` (pre-populated with original code copied from `.agents\skills\ref-downloader\` minus `__pycache__/` and `temp_*.py`).
+**Working dir:** `<this-repo>\` (pre-populated with original code copied from `<original-skill-dir>\` minus `__pycache__/` and `temp_*.py`).
 
 ---
 
@@ -22,7 +22,7 @@
 | `run_ref_downloader.py` | **modify** | Read config, pass through; add `--config`, `--yes` |
 | `extract_refs.py` | **modify** | Mailto from config; non-tty input handling |
 | `validate_refs.py` | **modify** | Mailto from config |
-| `download_refs.py` | **modify** | 11 line-level edits: lazy-load EDGE_USER_DATA, replace 5 PKU constant blocks + 5 inline string checks with config reads, rename auth_redirect reason |
+| `download_refs.py` | **modify** | 11 line-level edits: lazy-load EDGE_USER_DATA, replace 5 institution-config constant blocks + 5 inline string checks with config reads, rename auth_redirect reason |
 | `SKILL.md` | **rewrite** | Trim to agent-mode runbook; remove personal paths; cross-link README |
 | `LICENSE` | **create** | MIT |
 | `README.md` | **create** | English; primary documentation |
@@ -360,25 +360,28 @@ ignored_access_dois = []
 
 - [ ] **Step 2: Write `config.local.toml` (user's actual values, gitignored)**
 
+The original maintainer's config (institution-specific values redacted to placeholders for the public repo). Each user fills in their own values; this file never reaches git.
+
 ```toml
 # config.local.toml — gitignored. Personal values for this machine.
 
 [crossref]
-mailto = "ltc.z.ding@gmail.com"
+mailto = "<your-email@example.com>"
 
 [zotero]
-db_path = "D:\\Link\\Documents\\Zotero\\zotero.sqlite"
+db_path = "<path-to-your-zotero.sqlite>"   # e.g. "D:\\YourName\\Documents\\Zotero\\zotero.sqlite"
 
 [browser]
 edge_profile_dir = ""
 disable_extensions = false
 
 [institution]
-auth_hosts          = ["iaaa.pku.edu.cn"]
-auth_url_fragments  = ["iaaa/oauth", "oauth.jsp"]
-auth_page_titles    = ["北京大学统一身份认证", "统一身份认证"]
-auth_loading_titles = ["请稍候", "请稍后"]
-ignored_access_dois = ["10.1149/1.3546038"]
+# Fill in your own institution's SSO patterns; leave empty if no institution-bound access
+auth_hosts          = ["<sso-host.your-uni.edu>"]
+auth_url_fragments  = ["<oauth-fragment>"]
+auth_page_titles    = ["<Your University Single Sign-On title>"]
+auth_loading_titles = []
+ignored_access_dois = []
 ```
 
 - [ ] **Step 3: Verify `config.local.toml` is gitignored**
@@ -395,7 +398,7 @@ Expected: `config.local.toml` does NOT appear (it's in .gitignore from Task 1).
 python -c "from _config import load_config; c = load_config(); print('mailto:', c.crossref.mailto); print('zotero:', c.zotero.db_path); print('institution.auth_hosts:', c.institution.auth_hosts); print('source_files:', c.source_files)"
 ```
 
-Expected: `mailto: ltc.z.ding@gmail.com`, zotero non-empty, auth_hosts non-empty, source_files lists both example + local.
+Expected: `mailto: <your configured email>`, zotero non-empty, auth_hosts non-empty, source_files lists both example + local.
 
 - [ ] **Step 5: Commit only the example template**
 
@@ -838,7 +841,7 @@ Find the lines:
 
 ```python
     if any(host in url for host in AUTH_HOST_PATTERNS) or any(pat in url for pat in AUTH_URL_PATTERNS):
-        return {"kind": "auth_redirect", "reason": "pku_auth_redirect", "url": page.url}
+        return {"kind": "auth_redirect", "reason": "<institution>_auth_redirect", "url": page.url}
 
     title = ""
     try:
@@ -847,7 +850,7 @@ Find the lines:
         pass
 
     if title and any(pat in title for pat in AUTH_TITLE_PATTERNS):
-        return {"kind": "auth_redirect", "reason": "pku_auth_redirect", "url": page.url}
+        return {"kind": "auth_redirect", "reason": "<institution>_auth_redirect", "url": page.url}
 ```
 
 Replace with:
@@ -986,11 +989,11 @@ git commit -m "Wire institution + Edge profile to config; rename auth_redirect r
 
 - [ ] **Step 1: Open the existing SKILL.md and identify replacements needed**
 
-Personal hardcodes to remove:
-- `C:\Users\Link\AppData\Local\Programs\Python\Python311\python.exe` → `python`
-- `C:\Users\Link\.agents\skills\ref-downloader` and `C:\Users\Link\.claude\skills\ref-downloader` → `<SKILL_DIR>` (where the user installs this skill)
-- `D:\Link\Documents\Zotero\zotero.sqlite` → `<configured zotero.db_path or empty>`
-- `E:\北大\...` example PDF paths → generic `<path/to/your.pdf>`
+Personal hardcodes to remove (the maintainer's specifics; redacted here to placeholders):
+- `<personal Windows Python interpreter absolute path>` → `python`
+- `<personal SKILL install dir, both .agents and .claude path variants>` → `<SKILL_DIR>` (where the user installs this skill)
+- `<personal Zotero SQLite absolute path>` → `<configured zotero.db_path or empty>`
+- `<personal example PDF paths>` → generic `<path/to/your.pdf>`
 
 - [ ] **Step 2: Add a header explaining the dual purpose**
 
@@ -1010,12 +1013,9 @@ for debugging and incremental restarts.
 
 - [ ] **Step 3: Replace the "固定常量" block with a config pointer**
 
-Old block (around lines 7–17):
-```
-PYTHON    = C:\Users\Link\AppData\Local\Programs\Python\Python311\python.exe
-SKILL_DIR = C:\Users\Link\.agents\skills\ref-downloader
-ZOTERO_DB = D:\Link\Documents\Zotero\zotero.sqlite
-```
+Old block (around lines 7–17): three lines of literal absolute paths
+(maintainer's personal Windows Python interpreter, skill install dir, and
+Zotero SQLite path).
 
 Replace with:
 ```markdown
@@ -1043,7 +1043,9 @@ Throughout the file, replace:
 
 - [ ] **Step 5: Replace personal example paths**
 
-Find any `E:\北大\...` or `D:\Link\...` example paths and replace with generic `<path/to/your.pdf>` or `<path/to/output_dir>`.
+Find any maintainer-specific absolute paths (e.g. drive-letter PDF paths,
+personal directory examples) and replace with generic `<path/to/your.pdf>` or
+`<path/to/output_dir>`.
 
 - [ ] **Step 6: Add cross-link section at end**
 
@@ -1572,8 +1574,9 @@ Expected hits (acceptable, document why each is OK):
 - `CHANGELOG.md`: any mentions of Chinese language are description, not personal.
 
 Unacceptable (must fix immediately):
-- Any `C:\Users\Link`, `D:\Link`, `E:\北大`, `ltc.z.ding`, `gmail.com` in committed files
-- Any literal `"iaaa.pku.edu.cn"` or `"北京大学统一身份认证"` outside of `config.local.toml`
+- Any maintainer-specific home directory or drive-letter path in committed files
+- Any maintainer-specific personal email in committed files
+- Any institution-specific SSO host or authentication-page title outside of `config.local.toml` (the gitignored personal config)
 
 - [ ] **Step 2: If any unacceptable hit appears, stop and fix it before continuing**
 
@@ -1682,7 +1685,7 @@ create release notes), and where the design + plan docs live.
 ## Self-review checklist (run by author after writing this plan)
 
 **Spec coverage**:
-- [x] PKU sanitization (8 hardcoded sites: 119, 736, 1122-1124, 1126-1129, 1131-1134, 1251, 1260, 1509, 2205) — Task 7
+- [x] institution sanitization (8 hardcoded sites: 119, 736, 1122-1124, 1126-1129, 1131-1134, 1251, 1260, 1509, 2205) — Task 7
 - [x] EDGE_USER_DATA lazy load (line 78) — Task 7 step 2
 - [x] AIP/AVS `稍候` ambiguity documented — CONTRIBUTING.md Task 12
 - [x] Zotero DB hardcode (run_ref_downloader.py:31) — Task 4
@@ -1695,7 +1698,7 @@ create release notes), and where the design + plan docs live.
 - [x] SUPPORTED_PUBLISHERS.md extracted — Task 15
 - [x] Issue templates — Task 17
 - [x] code-review + deploy-checklist gates — Tasks 20, 21
-- [x] Original skill untouched (cwd is `C:\Users\Link\projects\ref-downloader\`, not `.agents`)
+- [x] Original skill untouched (cwd is `<this-repo>\`, not `.agents`)
 
 **Placeholder scan**: No "TBD", "TODO", "implement later", "appropriate error handling", etc. in this plan.
 

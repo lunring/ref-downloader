@@ -1,8 +1,8 @@
 # ref-downloader Open-Sourcing Design
 
 **Date**: 2026-05-10
-**Source skill**: `C:\Users\Link\.agents\skills\ref-downloader\` (untouched)
-**Working copy**: `C:\Users\Link\projects\ref-downloader\` (this repo, freshly copied)
+**Source skill**: `<original-skill-dir>\` (untouched)
+**Working copy**: `<this-repo>\` (this repo, freshly copied)
 
 ---
 
@@ -11,7 +11,7 @@
 Convert the personal `ref-downloader` Claude Code skill into a self-contained,
 shareable, GitHub-ready open-source project, **without modifying the original**.
 
-Original skill at `C:\Users\Link\.agents\skills\ref-downloader\` stays intact;
+Original skill at `<original-skill-dir>\` stays intact;
 the user keeps using it locally. This new folder is the open-source variant —
 it can be developed, refactored, tested, and eventually `git init` + pushed
 without affecting the user's working setup.
@@ -30,42 +30,47 @@ without affecting the user's working setup.
 ## 3. Review-driven sanitization map
 
 Two parallel reviews (Plan-agent + Kimi-supervision) found these private
-information leaks. Plan-agent caught the structural issues + main PKU block;
-Kimi found 3 PKU strings scattered outside the obvious block; self-grep
+information leaks. Plan-agent caught the structural issues + main institution-specific block;
+Kimi found 3 institution-specific strings scattered outside the obvious block; self-grep
 confirmed no other drive-letter paths or personal identifiers.
 
-### 3.1 PKU institutional signals (HIGH-PRIORITY — PII-adjacent)
+### 3.1 institutional signals (HIGH-PRIORITY — PII-adjacent)
 
 All in `download_refs.py`, will be replaced with reads from
 `config.institution.*` (5 fields, see §4.2):
 
-| Line | Current code | Reads from |
+For privacy, the original literal values (institution domain, ignored-access
+DOIs, auth-page titles, paths) are redacted to placeholders below. The
+maintainer's actual values lived in `config.local.toml` (gitignored) when this
+plan was executed.
+
+| Line | Original code shape | Reads from |
 |---|---|---|
-| 119–122 | `IGNORED_INSTITUTION_ACCESS_DOIS = {"10.1149/1.3546038"}` | `config.institution.ignored_access_dois` |
-| 736 | `"请稍候" in last_title or "请稍后" in last_title` | `any(t in last_title for t in cfg.auth_loading_titles)` |
-| 1122–1124 | `AUTH_HOST_PATTERNS = ("iaaa.pku.edu.cn",)` | `tuple(cfg.auth_hosts)` |
-| 1126–1129 | `AUTH_URL_PATTERNS = ("iaaa/oauth", "oauth.jsp")` | `tuple(cfg.auth_url_fragments)` |
-| 1131–1134 | `AUTH_TITLE_PATTERNS = ("北京大学统一身份认证", "统一身份认证")` | `tuple(cfg.auth_page_titles)` |
-| 1251 / 1260 | `reason="pku_auth_redirect"` | hardcoded `"institution_auth_redirect"` (no config needed) |
-| 1509 | `if "统一身份认证" in decoded:` | `any(t in decoded for t in cfg.auth_page_titles)` |
-| 2205 | `or "统一身份认证" in head` | `any(t in head for t in cfg.auth_page_titles)` |
-| 2714 / 2717 | `"稍候" in title` | `any(t in title for t in cfg.auth_loading_titles)` |
+| 119–122 | `IGNORED_INSTITUTION_ACCESS_DOIS = {"<institution-paywalled-DOI>"}` | `config.institution.ignored_access_dois` |
+| 736 | `"<chinese-loading-title>" in last_title or "<other-loading-title>" in last_title` | `any(t in last_title for t in cfg.auth_loading_titles)` |
+| 1122–1124 | `AUTH_HOST_PATTERNS = ("<institution-sso-host>",)` | `tuple(cfg.auth_hosts)` |
+| 1126–1129 | `AUTH_URL_PATTERNS = ("<sso-url-fragment>", "oauth.jsp")` | `tuple(cfg.auth_url_fragments)` |
+| 1131–1134 | `AUTH_TITLE_PATTERNS = ("<institution-sso-page-title>", "<generic-sso-title>")` | `tuple(cfg.auth_page_titles)` |
+| 1251 / 1260 | `reason="<institution>_auth_redirect"` | hardcoded `"institution_auth_redirect"` (no config needed) |
+| 1509 | `if "<sso-page-title>" in decoded:` | `any(t in decoded for t in cfg.auth_page_titles)` |
+| 2205 | `or "<sso-page-title>" in head` | `any(t in head for t in cfg.auth_page_titles)` |
+| 2714 / 2717 | `"<chinese-loading-title-fragment>" in title` | `any(t in title for t in cfg.auth_loading_titles)` |
 
 **Ambiguity to document in CONTRIBUTING.md**: `auth_loading_titles` is read by
 both the institution SSO detection path AND the AIP/AVS publisher loading-page
-detection path. The same Chinese string ("请稍候") legitimately appears in
+detection path. The same Chinese loading-text fragment legitimately appears in
 both contexts. Future contributors must not "clean up" by splitting these.
 
 ### 3.2 Other private hardcodes
 
-| File:line | Current | Action |
+| File:line | Original (redacted) | Action |
 |---|---|---|
-| `run_ref_downloader.py:31` | `ZOTERO_DB = Path(r"D:\Link\Documents\Zotero\zotero.sqlite")` | Read from `config.zotero.db_path`; if empty/missing → silently skip Zotero |
+| `run_ref_downloader.py:31` | `ZOTERO_DB = Path(r"<personal-zotero-sqlite-path>")` | Read from `config.zotero.db_path`; if empty/missing → silently skip Zotero |
 | `download_refs.py:78` | `EDGE_USER_DATA = os.path.expandvars(...)` (module-level) | Convert to lazy: read inside `launch_edge_context()` from `config.browser.edge_profile_dir` (empty → OS default) |
 | `extract_refs.py:24` | `USER_AGENT = "RefDownloader/1.0 (mailto:academic-tool@example.com)"` | Build at runtime from `config.crossref.mailto`; warn at startup if still placeholder |
 | `validate_refs.py:27` | (same as above) | Same |
 | `extract_refs.py:112` | `input("Overwrite? [y/N] ")` | Add `--yes` flag; if non-tty (`not sys.stdin.isatty()`) → default to abort |
-| `SKILL.md` (multiple) | `C:\Users\Link\AppData\Local\Programs\Python\Python311\python.exe`, `C:\Users\Link\.agents\skills\ref-downloader`, `D:\Link\Documents\Zotero\zotero.sqlite`, `E:\北大\...` | Replace with `<SKILL_DIR>` placeholder; cross-link to README |
+| `SKILL.md` (multiple) | maintainer's personal Windows Python interpreter path, skill install dir under user home, Zotero SQLite absolute path, drive-letter PDF examples | Replace with `<SKILL_DIR>` placeholder; cross-link to README |
 
 ### 3.3 Files to delete
 
@@ -254,8 +259,8 @@ Specifically: rerun Gate 1 grep, eyeball `git diff --stat`, confirm
 
 | Reviewer | Findings unique to them |
 |---|---|
-| Plan-agent | Symlink discovery; PKU PII at 1123/1132/1251/1260 + 119-122; EDGE_USER_DATA module-level (line 78); blocking `input()` at extract_refs.py:112; env var fallback recommendation; SECURITY.md recommendation; "if you can change one thing" → sanitize PKU |
-| Kimi (narrow) | Three additional PKU strings at 736 / 1509 / 2205 (outside the main block); confirmed no other module-level constants need lazy-load; flagged auth_loading_titles ambiguity (institution + AIP/AVS share the string) |
+| Plan-agent | Symlink discovery; institution PII at 1123/1132/1251/1260 + 119-122; EDGE_USER_DATA module-level (line 78); blocking `input()` at extract_refs.py:112; env var fallback recommendation; SECURITY.md recommendation; "if you can change one thing" → sanitize PKU |
+| Kimi (narrow) | Three additional institution-specific strings at 736 / 1509 / 2205 (outside the main block); confirmed no other module-level constants need lazy-load; flagged auth_loading_titles ambiguity (institution + AIP/AVS share the string) |
 | Self-grep | Confirmed no Drive-letter paths beyond known ones; no personal email/username in `.py`; identified additional URL fragment `iaaa/oauth` at 1127 and `oauth.jsp` at 1128 |
 
 All findings consolidated into §3 above.
