@@ -48,6 +48,49 @@ from urllib.parse import unquote, urljoin, urlparse
 
 from playwright.async_api import BrowserContext, Page, async_playwright, Error as PlaywrightError
 
+from _config import load_config, InstitutionConfig
+
+# Institution-specific patterns are loaded from config.local.toml at startup
+# via init_institution_config(). Stays empty for vanilla open-internet use.
+_INSTITUTION: InstitutionConfig = InstitutionConfig()
+
+
+def init_institution_config(cfg_institution: InstitutionConfig) -> None:
+    """Set institution patterns from config; called once from main()."""
+    global _INSTITUTION
+    _INSTITUTION = cfg_institution
+
+
+def get_edge_user_data_dir() -> str:
+    """Resolve Edge profile dir at call time. Order:
+        1. config.browser.edge_profile_dir if non-empty
+        2. %LOCALAPPDATA%\\Microsoft\\Edge\\User Data (Windows default)
+    """
+    cfg = load_config()
+    if cfg.browser.edge_profile_dir:
+        return cfg.browser.edge_profile_dir
+    return os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data")
+
+
+def ignored_institution_access_dois() -> set:
+    return set(_INSTITUTION.ignored_access_dois)
+
+
+def _auth_hosts() -> tuple:
+    return tuple(_INSTITUTION.auth_hosts)
+
+
+def _auth_url_fragments() -> tuple:
+    return tuple(_INSTITUTION.auth_url_fragments)
+
+
+def _auth_page_titles() -> tuple:
+    return tuple(_INSTITUTION.auth_page_titles)
+
+
+def _auth_loading_titles() -> tuple:
+    return tuple(_INSTITUTION.auth_loading_titles)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # These timeouts deliberately bias toward interactive stability instead of pure throughput.
 # Publisher-specific hot-session and viewer-settle knobs live here so they are easy to tune
@@ -75,7 +118,6 @@ ELSEVIER_HOT_AUTO_RETRY_REASONS = {
 DIRECT_CAPTURE_WAIT_CYCLES_DEFAULT = 15
 SESSION_RESTART_LIMIT_PER_REF = 1
 
-EDGE_USER_DATA = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\Edge\User Data")
 RUNS_DIR_NAME = "runs"
 ROUND_NAME = "round-03"
 
@@ -114,10 +156,6 @@ RUN_CTX: Dict[str, Any] = {
     "round_id": None,
     "elsevier_hot_until": 0.0,
     "elsevier_hot_reason": "",
-}
-
-IGNORED_INSTITUTION_ACCESS_DOIS = {
-    "10.1149/1.3546038",
 }
 
 PUBLISHER_STRATEGIES: Dict[str, Dict[str, str]] = {
@@ -390,7 +428,7 @@ def load_run_events_by_ref() -> Dict[int, List[Dict[str, Any]]]:
 
 def classify_ref_issue(row: Dict[str, Any], events: List[Dict[str, Any]]) -> str:
     doi = (row.get("doi") or "").lower()
-    if doi in IGNORED_INSTITUTION_ACCESS_DOIS:
+    if doi in ignored_institution_access_dois():
         return "ignored institution access"
 
     results = {(evt.get("result") or "").lower() for evt in events}
@@ -733,7 +771,11 @@ async def wait_for_manual_resume_page_ready(
 
         url_lower = lower_unquoted(page.url)
         title_lower = last_title.lower()
-        loading_title = (not last_title) or ("请稍候" in last_title) or ("请稍后" in last_title) or title_lower in ("loading", "loading...")
+        loading_title = (
+            (not last_title)
+            or any(t in last_title for t in _auth_loading_titles())
+            or title_lower in ("loading", "loading...")
+        )
         elsevier_pdf_route = publisher == "elsevier" and (
             "pdf.sciencedirectassets.com" in url_lower or "/pdfft" in url_lower or "main.pdf" in url_lower
         )
@@ -1119,19 +1161,8 @@ JS_FIND_PDF_LINKS = """
 
 
 # ── Captcha / challenge detection ────────────────────────────────────────────
-AUTH_HOST_PATTERNS = (
-    "iaaa.pku.edu.cn",
-)
-
-AUTH_URL_PATTERNS = (
-    "iaaa/oauth",
-    "oauth.jsp",
-)
-
-AUTH_TITLE_PATTERNS = (
-    "北京大学统一身份认证",
-    "统一身份认证",
-)
+# Auth patterns are loaded from config.institution at startup; see _auth_hosts()
+# and friends near the top of this file. Empty by default for vanilla use.
 
 CAPTCHA_SELECTORS = (
     "#px-captcha, "                              # PerimeterX (Elsevier)
@@ -1247,8 +1278,8 @@ async def page_marker_snapshot(page: Page) -> Dict[str, str]:
 async def inspect_access_barrier(page: Page) -> Optional[Dict[str, str]]:
     url = (page.url or "").lower()
 
-    if any(host in url for host in AUTH_HOST_PATTERNS) or any(pat in url for pat in AUTH_URL_PATTERNS):
-        return {"kind": "auth_redirect", "reason": "pku_auth_redirect", "url": page.url}
+    if any(host in url for host in _auth_hosts()) or any(pat in url for pat in _auth_url_fragments()):
+        return {"kind": "auth_redirect", "reason": "institution_auth_redirect", "url": page.url}
 
     title = ""
     try:
@@ -1256,8 +1287,8 @@ async def inspect_access_barrier(page: Page) -> Optional[Dict[str, str]]:
     except Exception:
         pass
 
-    if title and any(pat in title for pat in AUTH_TITLE_PATTERNS):
-        return {"kind": "auth_redirect", "reason": "pku_auth_redirect", "url": page.url}
+    if title and any(pat in title for pat in _auth_page_titles()):
+        return {"kind": "auth_redirect", "reason": "institution_auth_redirect", "url": page.url}
 
     if is_elsevier_crasolve_shell(page.url):
         return {"kind": "publisher_shell", "reason": "elsevier_crasolve_shell", "url": page.url}
@@ -1506,7 +1537,7 @@ def looks_like_valid_pdf(path: Path, stage: str) -> tuple[bool, str]:
     decoded = head.decode("utf-8", errors="ignore").lower()
     if "<html" in decoded or "<!doctype" in decoded:
         return False, "html_instead_of_pdf"
-    if "统一身份认证" in decoded:
+    if any(t in decoded for t in _auth_page_titles()):
         return False, "auth_page_instead_of_pdf"
 
     return True, "ok"
@@ -2202,7 +2233,9 @@ def is_non_pdf_asset_url(url: str) -> bool:
 
 def body_looks_like_html(body: bytes) -> bool:
     head = body[:2048].decode("utf-8", errors="ignore").lower()
-    return "<html" in head or "<!doctype" in head or "统一身份认证" in head
+    if "<html" in head or "<!doctype" in head:
+        return True
+    return any(t in head for t in _auth_page_titles())
 
 
 def find_existing_si_asset(base: Path) -> Optional[Path]:
@@ -2711,7 +2744,9 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
             if publisher in ("aip", "avs"):
                 try:
                     title = (await page.title()).strip()
-                    if "稍候" in title or title in ("", "Loading..."):
+                    inst_loading = any(t in title for t in _auth_loading_titles())
+                    is_aip_loading = "稍候" in title  # AIP/AVS literally serves Chinese loading text
+                    if inst_loading or is_aip_loading or title in ("", "Loading..."):
                         log_event(stage, "aip_loading_wait", "start", page.url, f"title={title!r}")
                         await page.wait_for_function(
                             "() => !document.title.includes('稍候') && document.title.length > 2",
@@ -2974,7 +3009,7 @@ async def download_one(ctx: BrowserContext, ref: dict,
             log_event("ref", "validate", STATUS_FAILED, "", "no_doi")
             return finalize_report_row(result)
 
-        if doi.lower() in IGNORED_INSTITUTION_ACCESS_DOIS:
+        if doi.lower() in ignored_institution_access_dois():
             print("       PDF: ignored (institution access)")
             print("       SI: ignored (institution access)")
             result["pdf_status"] = "ignored (ignored_institution_access)"
@@ -3222,7 +3257,7 @@ async def launch_edge_context(pw) -> BrowserContext:
         launch_args.append("--disable-extensions")
 
     return await pw.chromium.launch_persistent_context(
-        EDGE_USER_DATA,
+        get_edge_user_data_dir(),
         channel="msedge",
         headless=False,
         accept_downloads=True,
@@ -3277,6 +3312,9 @@ async def main():
         print("Example: python download_refs.py jacs.5c05017")
         sys.exit(1)
 
+    cfg = load_config()
+    init_institution_config(cfg.institution)
+
     project_dir, validated_path = resolve_input(sys.argv[1])
 
     with open(validated_path, "r", encoding="utf-8") as f:
@@ -3294,9 +3332,10 @@ async def main():
     print(f"Edge extensions: {'disabled' if env_flag('REF_DOWNLOADER_DISABLE_EXTENSIONS', default=False) else 'enabled'}")
 
     # Check Edge
-    edge_path = Path(EDGE_USER_DATA)
+    edge_user_data = get_edge_user_data_dir()
+    edge_path = Path(edge_user_data)
     if not edge_path.exists():
-        print(f"\nERROR: Edge user data not found at:\n  {EDGE_USER_DATA}")
+        print(f"\nERROR: Edge user data not found at:\n  {edge_user_data}")
         sys.exit(1)
 
     print(f"\n{'='*60}")
