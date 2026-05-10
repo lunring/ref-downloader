@@ -53,7 +53,9 @@ pip install -r requirements.txt
 playwright install msedge
 
 cp config.example.toml config.local.toml
-notepad config.local.toml   # 至少把 [crossref].mailto 改成你的真实邮箱
+# 在你顺手的编辑器里编辑 config.local.toml，至少改 [crossref].mailto
+# Windows: notepad config.local.toml
+# macOS / Linux: $EDITOR config.local.toml   (或 vim / nano / code 等)
 ```
 
 ## 快速开始

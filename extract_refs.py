@@ -109,7 +109,7 @@ def main():
 
     cfg = load_config()
     warn_if_placeholder_mailto(cfg)
-    user_agent = user_agent_from(cfg, "RefDownloader/1.0")
+    user_agent = user_agent_from(cfg)
 
     parent_doi = args.parent_doi.strip()
     project_name = doi_to_project_name(parent_doi)

@@ -54,20 +54,33 @@ from _config import load_config, InstitutionConfig
 
 # Institution-specific patterns are loaded from config.local.toml at startup
 # via init_institution_config(). Stays empty for vanilla open-internet use.
-# The 5 getters below are @lru_cache(1) for two reasons:
-#   - eliminate per-ref tuple/set rebuild in hot loops
-#   - align with the "set-once at startup" contract — caches are explicitly
-#     cleared in init_institution_config() so re-init still works.
+# The 5 institution getters + get_edge_user_data_dir below are @lru_cache(1) to
+# eliminate per-ref tuple/set/dict rebuild in download hot loops.
+#
+# Cache invariant: caches are populated at first call AFTER init_institution_config()
+# fires. init_institution_config() also clears the cache for get_edge_user_data_dir
+# even though that one reads [browser] not [institution] — this works because
+# load_config() itself is uncached, so a fresh read after cache_clear sees current
+# TOML / env var values. Prefer the simpler "init clears all caches" rule over
+# splitting into per-section init functions.
+#
+# WARNING: any future mid-run reload of config.local.toml MUST also call
+# .cache_clear() on every getter listed below, or the run will silently use
+# stale values. There is no automatic file-watcher today; if you add one,
+# extend init_institution_config or factor a shared `_clear_runtime_caches()`.
 _INSTITUTION: InstitutionConfig = InstitutionConfig()
 
 
 def init_institution_config(cfg_institution: InstitutionConfig) -> None:
     """Set institution patterns from config; called once from main().
 
-    Also clears the lru_caches on the 5 getters + get_edge_user_data_dir
-    so that any read AFTER this call sees the new values. Pre-init reads
-    (which would be a bug) get cached against the empty default until init
-    fires; init then invalidates them.
+    Also clears lru_caches on all 6 runtime-config getters so any read
+    AFTER this call sees fresh values. Pre-init reads (which would be a
+    contract violation by the caller) cache empty defaults; init then
+    invalidates them.
+
+    The cache_clear for `get_edge_user_data_dir` lives here despite reading
+    [browser] (not [institution]) — see WARNING comment above for rationale.
     """
     global _INSTITUTION
     _INSTITUTION = cfg_institution

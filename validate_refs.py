@@ -291,7 +291,7 @@ def main():
 
     cfg = load_config()
     warn_if_placeholder_mailto(cfg)
-    user_agent = user_agent_from(cfg, "RefDownloader/1.0")
+    user_agent = user_agent_from(cfg)
 
     project_dir, raw_path, validated_path = resolve_input(sys.argv[1])
 

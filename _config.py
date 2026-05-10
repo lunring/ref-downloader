@@ -24,6 +24,11 @@ EXAMPLE_TOML = PACKAGE_DIR / "config.example.toml"
 LOCAL_TOML = PACKAGE_DIR / "config.local.toml"
 PLACEHOLDER_MAILTO = "your.email@example.com"
 
+# Single source of truth for the User-Agent app version. Keep in sync with
+# CHANGELOG.md when releasing.
+__version__ = "0.1.0"
+APP_NAME = "RefDownloader"
+
 
 @dataclass
 class CrossrefConfig:
@@ -62,8 +67,15 @@ class Config:
 def _load_toml(path: Path) -> dict:
     if not path.exists():
         return {}
-    with open(path, "rb") as f:
-        return tomllib.load(f)
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except tomllib.TOMLDecodeError as e:
+        print(
+            f"ERROR: Failed to parse TOML config file:\n  {path}\n  {e}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
 
 def _merge_dict(base: dict, overlay: dict) -> dict:
@@ -189,7 +201,14 @@ def load_config(explicit_path: Optional[Path] = None) -> Config:
     return cfg
 
 
-def user_agent_from(cfg: Config, app: str = "RefDownloader/1.0") -> str:
+def user_agent_from(cfg: Config, app: Optional[str] = None) -> str:
+    """Build the Crossref polite-pool User-Agent string.
+
+    Default app token is `<APP_NAME>/<__version__>`. Pass an override only when
+    a script wants to add a stage-specific suffix.
+    """
+    if app is None:
+        app = f"{APP_NAME}/{__version__}"
     return f"{app} (mailto:{cfg.crossref.mailto})"
 
 

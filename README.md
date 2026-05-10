@@ -63,7 +63,9 @@ pip install -r requirements.txt
 playwright install msedge
 
 cp config.example.toml config.local.toml
-notepad config.local.toml   # edit at minimum [crossref].mailto
+# Edit config.local.toml in your preferred editor — at minimum set [crossref].mailto.
+# Windows: notepad config.local.toml
+# macOS / Linux: $EDITOR config.local.toml   (or vim / nano / code / ...)
 ```
 
 ## Quick start
