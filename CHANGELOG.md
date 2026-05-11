@@ -41,6 +41,19 @@ configuration.
   pointer to the extended runbook.
 - README and README.zh.md gain a `status-beta` badge + an explicit "Status:
   beta (v0.1.0)" status line so users calibrate expectations.
+- **Offline pytest suite** (`requirements-dev.txt` + `tests/test_*.py`):
+  10 unit tests covering the config loader (chain merge order, env-var
+  overrides, malformed-TOML exit, schema validation) + publisher detection
+  (DOI prefix + journal fallback) + project-name sanitization.
+  Runs in <1s, no Playwright dependency.
+- `docs/architecture.md` (new): condensed design rationale for contributors
+  (why real Edge profile, why one big `download_refs.py`, why the
+  `auth_loading_titles` ambiguity is intentional, what's deliberately out
+  of scope).
+- `docs/plans/` (removed): the internal design + implementation diaries are
+  no longer carried in the public-facing repo. Their substantive content
+  lives in `docs/architecture.md`; their procedural content is captured
+  in git history + commit messages.
 
 ### Publishers
 

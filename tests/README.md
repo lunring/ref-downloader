@@ -1,7 +1,33 @@
-# Manual smoke-test recipe
+# Testing
 
-This project has no automated test suite yet. Before submitting a PR, run a
-manual smoke test for the publisher you touched.
+Two layers:
+
+1. **Offline pytest** — fast, no network, no Playwright. Run on every PR.
+2. **Manual smoke** — full pipeline against a live publisher; covers what unit tests can't.
+
+## Offline pytest
+
+```powershell
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+Coverage:
+
+| File | What it tests |
+|---|---|
+| `test_config.py` | TOML loader: chain merge order, env-var overrides, malformed-TOML exit code, schema validation (non-string filter, scalar-where-table) |
+| `test_validate_refs.py` | `detect_publisher` — DOI-prefix primary path + journal-name fallback |
+| `test_run_ref_downloader.py` | `looks_like_doi` + project-name sanitization (Windows-illegal chars) |
+
+Roughly 10 tests; runs in well under a second. `download_refs.py` is NOT
+imported by the test suite (it pulls in Playwright); that flow is covered
+by the manual smoke recipe below.
+
+## Manual smoke-test recipe
+
+Before submitting a PR that changes publisher logic, run a manual smoke test
+for the publisher you touched.
 
 ## Per-publisher smoke test
 
