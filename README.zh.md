@@ -84,8 +84,7 @@ PDFs land in:      ./jacs.5c05017_refs/jacs.5c05017/
 Skill 自包含在 `skills/ref-downloader/` 下。选你的 agent 框架对应的安装路径：
 
 ```powershell
-# 把 <REPO_URL> 换成本仓库的 clone URL
-git clone <REPO_URL>
+git clone https://github.com/ltczding-gif/ref-downloader.git
 
 # 任选一个安装位置（按你的 agent 框架）:
 #   Claude Code:        cp -r ref-downloader/skills/ref-downloader ~/.claude/skills/
@@ -144,7 +143,7 @@ cp config.example.toml config.local.toml
 如果要 hack 代码，skill 文件夹本身就是个可运行 Python 项目：
 
 ```powershell
-git clone <REPO_URL>
+git clone https://github.com/ltczding-gif/ref-downloader.git
 cd ref-downloader
 
 pip install -r requirements.txt -r requirements-dev.txt

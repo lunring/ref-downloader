@@ -84,8 +84,7 @@ PDFs land in:      ./jacs.5c05017_refs/jacs.5c05017/
 The skill is self-contained under `skills/ref-downloader/`. Pick the install path for your agent framework:
 
 ```powershell
-# Replace <REPO_URL> with this repo's clone URL.
-git clone <REPO_URL>
+git clone https://github.com/ltczding-gif/ref-downloader.git
 
 # Pick ONE install destination for your agent framework:
 #   Claude Code:        cp -r ref-downloader/skills/ref-downloader ~/.claude/skills/
@@ -144,7 +143,7 @@ cp config.example.toml config.local.toml
 If you want to hack on the code, the skill folder _is_ a runnable Python project:
 
 ```powershell
-git clone <REPO_URL>
+git clone https://github.com/ltczding-gif/ref-downloader.git
 cd ref-downloader
 
 pip install -r requirements.txt -r requirements-dev.txt
