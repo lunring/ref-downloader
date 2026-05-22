@@ -164,6 +164,15 @@ ELSEVIER_HOT_AUTO_RETRY_REASONS = {
     "viewer_capture_failed",
     "elsevier_pdf_security_verification",
 }
+ELSEVIER_TRANSIENT_POPUP_REASONS = {
+    "elsevier_crasolve_shell",
+    "elsevier_pdf_security_verification",
+}
+ELSEVIER_PRE_CLICK_MIN_WAIT_MS = 8_000
+ELSEVIER_PRE_CLICK_MAX_WAIT_MS = 10_000
+ELSEVIER_POPUP_POLL_MS = 15_000
+ELSEVIER_POPUP_SETTLE_MS = 20_000
+ELSEVIER_POPUP_CAPTURE_WAIT_MS = 8_000
 DIRECT_CAPTURE_WAIT_CYCLES_DEFAULT = 15
 SESSION_RESTART_LIMIT_PER_REF = 1
 
@@ -2606,9 +2615,203 @@ async def get_si_links(page: Page, publisher: str = "", doi: str = "") -> List[s
         await page.wait_for_timeout(500)
 
 
+async def find_elsevier_pdf_selector(page: Page) -> tuple[str, str]:
+    last_detail = "no_elsevier_pdf_selector"
+    for sel in PDF_SELECTORS.get("elsevier", []):
+        try:
+            loc = page.locator(sel).first
+            if await loc.count() <= 0:
+                continue
+            visible = await loc.is_visible(timeout=250)
+            enabled = await loc.is_enabled(timeout=250)
+            try:
+                detail_text = await loc.evaluate(
+                    """(node) => {
+                        const href = node.href || node.getAttribute('href') || '';
+                        const aria = node.getAttribute('aria-label') || '';
+                        const target = node.getAttribute('target') || '';
+                        return [href, aria, target].filter(Boolean).join(' ');
+                    }"""
+                )
+            except Exception:
+                detail_text = ""
+            last_detail = f"{sel} visible={visible} enabled={enabled} {str(detail_text)[:120]}"
+            if visible and enabled:
+                return sel, last_detail
+        except Exception as e:
+            last_detail = f"{sel}: {str(e)[:80]}"
+    return "", last_detail
+
+
+async def wait_for_elsevier_pdf_button_ready(page: Page, stage: str) -> str:
+    start = time.monotonic()
+    logged_probe = False
+    first_ready = ""
+    last_detail = "not_checked"
+
+    while True:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        sel, detail = await find_elsevier_pdf_selector(page)
+        last_detail = detail
+        if sel and not first_ready:
+            first_ready = sel
+
+        if elapsed_ms >= 5_000 and not logged_probe:
+            log_event(
+                stage,
+                "elsevier_pdf_button_probe",
+                "ready" if sel else "waiting",
+                page.url,
+                f"elapsed_ms={elapsed_ms} {detail}",
+            )
+            logged_probe = True
+
+        if sel and elapsed_ms >= ELSEVIER_PRE_CLICK_MIN_WAIT_MS:
+            log_event(
+                stage,
+                "elsevier_pdf_button_ready",
+                "ready",
+                page.url,
+                f"elapsed_ms={elapsed_ms} {detail}",
+            )
+            return sel
+
+        if elapsed_ms >= ELSEVIER_PRE_CLICK_MAX_WAIT_MS:
+            log_event(
+                stage,
+                "elsevier_pdf_button_ready",
+                "timeout",
+                page.url,
+                f"elapsed_ms={elapsed_ms} {last_detail}",
+            )
+            return first_ready
+
+        await page.wait_for_timeout(500)
+
+
+async def wait_for_elsevier_popup_after_click(
+    ctx: BrowserContext,
+    known_pages,
+    stage: str,
+    selector: str,
+    retry_locator=None,
+) -> Optional[Page]:
+    start = time.monotonic()
+    deadline = time.monotonic() + (ELSEVIER_POPUP_POLL_MS / 1000)
+    candidate = None
+    first_seen_at = 0.0
+    retry_sent = False
+    log_event(
+        stage,
+        "elsevier_popup_poll",
+        "start",
+        "",
+        f"timeout_ms={ELSEVIER_POPUP_POLL_MS} selector={selector}",
+    )
+
+    while time.monotonic() < deadline:
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        try:
+            new_pages = [p for p in ctx.pages if p not in known_pages and not p.is_closed()]
+        except Exception as e:
+            log_event(stage, "elsevier_popup_poll", STATUS_FAILED, "", str(e)[:120])
+            return None
+
+        if new_pages:
+            candidate = new_pages[-1]
+            if not first_seen_at:
+                first_seen_at = time.monotonic()
+                log_event(stage, "elsevier_popup_poll", "seen", getattr(candidate, "url", ""), selector)
+            try:
+                candidate_url = candidate.url or ""
+            except Exception:
+                candidate_url = ""
+            if candidate_url and candidate_url != "about:blank":
+                log_event(stage, "elsevier_popup_poll", "captured", candidate_url, selector)
+                return candidate
+            if time.monotonic() - first_seen_at >= 2.0:
+                log_event(stage, "elsevier_popup_poll", "captured_blank", candidate_url or "about:blank", selector)
+                return candidate
+
+        if retry_locator is not None and not retry_sent and candidate is None and elapsed_ms >= 10_000:
+            try:
+                await retry_locator.click()
+                retry_sent = True
+                log_event(stage, "elsevier_popup_poll", "retry_click_10s", "", selector)
+            except Exception as e:
+                retry_sent = True
+                log_event(stage, "elsevier_popup_poll", STATUS_FAILED, "", f"retry_click_10s {str(e)[:100]}")
+
+        await asyncio.sleep(0.25)
+
+    log_event(stage, "elsevier_popup_poll", "timeout", "", selector)
+    return candidate
+
+
+async def wait_for_elsevier_popup_surface_ready(page: Page, stage: str) -> str:
+    start = time.monotonic()
+    deadline = start + (ELSEVIER_POPUP_SETTLE_MS / 1000)
+    last_url = ""
+    last_reason = ""
+    logged_reason = ""
+    log_event(
+        stage,
+        "elsevier_popup_settle",
+        "start",
+        page.url,
+        f"timeout_ms={ELSEVIER_POPUP_SETTLE_MS}",
+    )
+
+    while time.monotonic() < deadline:
+        for state in ("domcontentloaded", "load"):
+            try:
+                await page.wait_for_load_state(state, timeout=1_500)
+            except Exception:
+                pass
+
+        cur_url = page.url or ""
+        if cur_url != last_url:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            log_event(stage, "elsevier_popup_settle", "url", cur_url, f"elapsed_ms={elapsed_ms}")
+            last_url = cur_url
+
+        barrier = None
+        try:
+            barrier = await inspect_access_barrier(page)
+        except Exception as e:
+            last_reason = f"barrier_check_failed:{str(e)[:80]}"
+
+        reason = (barrier or {}).get("reason", "")
+        if reason:
+            last_reason = reason
+        if reason in ELSEVIER_TRANSIENT_POPUP_REASONS:
+            if reason != logged_reason:
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                log_event(stage, "elsevier_popup_settle", "waiting", cur_url, f"{reason} elapsed_ms={elapsed_ms}")
+                logged_reason = reason
+            await page.wait_for_timeout(1_000)
+            continue
+
+        try:
+            surface = await inspect_pdf_surface(page)
+        except Exception:
+            surface = {}
+
+        lowered = cur_url.lower()
+        if surface.get("viewerish") or "pdf.sciencedirectassets.com" in lowered:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            log_event(stage, "elsevier_popup_settle", "ready", cur_url, f"elapsed_ms={elapsed_ms}")
+            return ""
+
+        await page.wait_for_timeout(1_000)
+
+    log_event(stage, "elsevier_popup_settle", "timeout", page.url, last_reason or "surface_not_ready")
+    return last_reason or "elsevier_popup_settle_timeout"
+
+
 async def try_elsevier_pdf(page: Page, ctx: BrowserContext, doi: str,
                            dest: Path) -> Dict[str, Any]:
-    """Elsevier/ScienceDirect: prefer article-page popup flow, then pdfft fallback."""
+    """Elsevier/ScienceDirect: prefer article-page popup flow; keep pdfft out of fallback."""
     url = f"https://doi.org/{doi}"
     stage = "main_pdf"
     print(f"       → elsevier: {url}")
@@ -2649,40 +2852,15 @@ async def try_elsevier_pdf(page: Page, ctx: BrowserContext, doi: str,
         if popup_attempt["state"] != STATUS_FAILED:
             return popup_attempt
 
-        pdfft_url = f"https://www.sciencedirect.com/science/article/pii/{pii}/pdfft?isDTMRedir=true&download=true"
-        print(f"       → pdfft(fallback): ...pii/{pii}/pdfft")
-        pdfft_attempt = await try_direct_pdf(page, ctx, pdfft_url, dest, stage=stage, allow_navigation=True)
-        if pdfft_attempt["state"] != STATUS_FAILED:
-            return pdfft_attempt
-        log_event(stage, "pdfft_fallback", pdfft_attempt["state"], pdfft_url, pdfft_attempt["reason"])
-
-        if is_elsevier_crasolve_shell(page.url):
-            log_event(stage, "elsevier_shell", "elsevier_crasolve_shell", page.url, "after_pdfft_failure")
-
-        if canonical_article_url and (is_elsevier_crasolve_shell(page.url) or "/pdfft" in (page.url or "").lower()):
-            print(f"       → article(reopen): {canonical_article_url[:70]}")
-            log_event(stage, "elsevier_article_reopen", "start", canonical_article_url, "after_pdfft_failure")
-            try:
-                await page.goto(canonical_article_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
-            except PlaywrightError as e:
-                if "ERR_ABORTED" in str(e) and page.url and "sciencedirect.com" in page.url:
-                    log_event(stage, "elsevier_article_reopen", "aborted_continue", page.url, str(e)[:120])
-                else:
-                    log_event(stage, "elsevier_article_reopen", STATUS_FAILED, canonical_article_url, str(e)[:120])
-                    return make_attempt(STATUS_MANUAL, "elsevier_article_reopen_failed")
-
-            await page.wait_for_timeout(200)
-            await handle_access_barrier(page, stage)
-            if is_elsevier_crasolve_shell(page.url):
-                log_event(stage, "elsevier_article_reopen", "elsevier_crasolve_shell", page.url, "reopen_landed_on_shell")
-                return make_attempt(STATUS_FAILED, "elsevier_crasolve_shell")
-            log_event(stage, "elsevier_article_reopen", "ready", page.url, "")
-
-        return popup_attempt
+        reason = popup_attempt.get("reason", "elsevier_popup_flow_failed")
+        log_event(stage, "pdfft_fallback", "skipped", canonical_article_url or page.url, f"reason={reason} auto_mode={'--auto' in sys.argv}")
+        return make_attempt(STATUS_MANUAL, reason)
 
     except ManualInterventionRequired as e:
         return make_attempt(STATUS_MANUAL, e.reason)
     except Exception as e:
+        if is_session_closed_error(e):
+            raise
         print(f"       → elsevier failed: {str(e)[:60]}")
         log_event(stage, "try_elsevier_pdf", STATUS_FAILED, page.url, str(e)[:120])
         return make_attempt(STATUS_FAILED, str(e)[:80])
@@ -2731,13 +2909,17 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
     async def inspect_new_pdf_page(new_p):
         keep_new_page = False
         popup_attempt = make_attempt(STATUS_FAILED, "popup_unhandled")
+        is_elsevier_popup = publisher == "elsevier" and stage == "main_pdf"
         try:
             await new_p.wait_for_load_state("domcontentloaded", timeout=8_000)
             try:
                 await new_p.wait_for_load_state("load", timeout=8_000)
             except Exception:
                 pass
-            await new_p.wait_for_timeout(800)
+            if is_elsevier_popup:
+                await wait_for_elsevier_popup_surface_ready(new_p, stage)
+            else:
+                await new_p.wait_for_timeout(800)
 
             try:
                 await handle_access_barrier(new_p, stage)
@@ -2756,7 +2938,8 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
                 except Exception:
                     pass
             new_p.on("response", grab_new)
-            await new_p.wait_for_timeout(3_000)
+            popup_capture_wait_ms = ELSEVIER_POPUP_CAPTURE_WAIT_MS if is_elsevier_popup else 3_000
+            await new_p.wait_for_timeout(popup_capture_wait_ms)
             if new_page_pdf is None:
                 popup_attempt = await fetch_pdf_from_viewer(new_p, ctx, dest, stage)
                 if popup_attempt["state"] == STATUS_MANUAL:
@@ -2816,7 +2999,7 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
                 await page.wait_for_load_state("load", timeout=8_000)
             except Exception:
                 pass
-            await page.wait_for_timeout(2_500)
+            await wait_for_elsevier_pdf_button_ready(page, stage)
             log_event(stage, "elsevier_article_stabilize", "ready", page.url, "pre_click_wait")
 
         page.on("response", on_response)
@@ -2878,19 +3061,28 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
                     print(f"         clicking: {sel}")
                     popup_page = None
                     click_sent = False
-                    popup_timeout = 8_000 if popup_expected else GENERIC_POPUP_TIMEOUT
-                    try:
-                        async with ctx.expect_page(timeout=popup_timeout) as popup_info:
+                    elsevier_popup_flow = publisher == "elsevier" and stage == "main_pdf" and popup_expected
+                    if elsevier_popup_flow:
+                        try:
                             await el.click()
                             click_sent = True
-                        popup_page = await popup_info.value
-                    except Exception as popup_err:
-                        if not click_sent:
-                            await el.click()
-                        if popup_expected:
+                            popup_page = await wait_for_elsevier_popup_after_click(ctx, known_pages, stage, sel, el)
+                        except Exception as popup_err:
                             log_event(stage, "selector_popup_wait", STATUS_FAILED, page.url, str(popup_err)[:120])
-                        elif "Timeout" not in str(popup_err):
-                            log_event(stage, "selector_popup_wait", "no_new_page", page.url, str(popup_err)[:120])
+                    else:
+                        popup_timeout = 8_000 if popup_expected else GENERIC_POPUP_TIMEOUT
+                        try:
+                            async with ctx.expect_page(timeout=popup_timeout) as popup_info:
+                                await el.click()
+                                click_sent = True
+                            popup_page = await popup_info.value
+                        except Exception as popup_err:
+                            if not click_sent:
+                                await el.click()
+                            if popup_expected:
+                                log_event(stage, "selector_popup_wait", STATUS_FAILED, page.url, str(popup_err)[:120])
+                            elif "Timeout" not in str(popup_err):
+                                log_event(stage, "selector_popup_wait", "no_new_page", page.url, str(popup_err)[:120])
                     if popup_page is None and popup_expected:
                         try:
                             await page.wait_for_timeout(500)
