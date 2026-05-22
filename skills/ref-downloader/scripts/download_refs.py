@@ -2550,8 +2550,12 @@ async def try_browser_pdf_navigation_candidate(
             close_other_pages=False,
         )
         if attempt["state"] == STATUS_MANUAL:
-            keep_page = True
-            preserve_manual_page(nav_page, stage, attempt["reason"])
+            if not is_auto_mode():
+                keep_page = True
+                preserve_manual_page(nav_page, stage, attempt["reason"])
+            else:
+                keep_page = True
+                return with_auto_retry_page(attempt["reason"], nav_page)
         return attempt
     finally:
         if not keep_page:
@@ -3403,8 +3407,13 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
             try:
                 await handle_access_barrier(new_p, stage)
             except ManualInterventionRequired as e:
-                keep_new_page = True
-                preserve_manual_page(new_p, stage, e.reason)
+                if not is_auto_mode():
+                    keep_new_page = True
+                    preserve_manual_page(new_p, stage, e.reason)
+                else:
+                    keep_new_page = True
+                    popup_attempt = with_auto_retry_page(e.reason, new_p)
+                    return popup_attempt
                 popup_attempt = make_attempt(STATUS_MANUAL, e.reason)
                 return popup_attempt
 
@@ -3422,8 +3431,12 @@ async def try_click_pdf(page: Page, ctx: BrowserContext, doi: str,
             if new_page_pdf is None:
                 popup_attempt = await fetch_pdf_from_viewer(new_p, ctx, dest, stage)
                 if popup_attempt["state"] == STATUS_MANUAL:
-                    keep_new_page = True
-                    preserve_manual_page(new_p, stage, popup_attempt["reason"])
+                    if not is_auto_mode():
+                        keep_new_page = True
+                        preserve_manual_page(new_p, stage, popup_attempt["reason"])
+                    else:
+                        keep_new_page = True
+                        popup_attempt = with_auto_retry_page(popup_attempt["reason"], new_p)
                 return popup_attempt
             if isinstance(new_page_pdf, (bytes, bytearray)):
                 return new_page_pdf
@@ -3759,11 +3772,27 @@ async def download_one(ctx: BrowserContext, ref: dict,
                     mark_elsevier_hot("main_pdf_downloaded")
                 result["pdf_status"] = f"downloaded ({pdf_attempt['size_kb']} KB)"
             elif pdf_attempt["state"] == STATUS_MANUAL:
-                keep_page = True
-                preserve_manual_page(page, "main_pdf", pdf_attempt["reason"])
-                result["pdf_status"] = f"manual_pending ({pdf_attempt['reason']})"
-                result["si_status"] = "skipped (manual_pending)"
-                return finalize_report_row(result)
+                if is_auto_mode():
+                    retry_page = pdf_attempt.get("auto_retry_page") or page
+                    scheduled_attempt = await schedule_auto_manual_retry(
+                        ctx,
+                        retry_page,
+                        pdf_dest,
+                        "main_pdf",
+                        pdf_attempt["reason"],
+                        ref,
+                    )
+                    if retry_page is page:
+                        keep_page = True
+                    result["pdf_status"] = f"manual_pending ({manual_pending_reason(scheduled_attempt)})"
+                    result["si_status"] = "skipped (manual_pending)"
+                    return finalize_report_row(result)
+                else:
+                    keep_page = True
+                    preserve_manual_page(page, "main_pdf", pdf_attempt["reason"])
+                    result["pdf_status"] = f"manual_pending ({pdf_attempt['reason']})"
+                    result["si_status"] = "skipped (manual_pending)"
+                    return finalize_report_row(result)
             else:
                 result["pdf_status"] = f"failed ({pdf_attempt['reason']})"
                 if publisher == "elsevier":
@@ -3807,15 +3836,41 @@ async def download_one(ctx: BrowserContext, ref: dict,
                         else:
                             result["si_status"] = f"downloaded ({si_attempt['size_kb']} KB)"
                     elif si_attempt["state"] == STATUS_MANUAL:
-                        keep_page = True
-                        preserve_manual_page(page, "si", si_attempt["reason"])
-                        result["si_status"] = f"manual_pending ({si_attempt['reason']})"
+                        if is_auto_mode():
+                            retry_page = si_attempt.get("auto_retry_page") or page
+                            scheduled_attempt = await schedule_auto_manual_retry(
+                                ctx,
+                                retry_page,
+                                si_base.with_suffix(".pdf"),
+                                "si",
+                                si_attempt["reason"],
+                                ref,
+                            )
+                            if retry_page is page:
+                                keep_page = True
+                            result["si_status"] = f"manual_pending ({manual_pending_reason(scheduled_attempt)})"
+                        else:
+                            keep_page = True
+                            preserve_manual_page(page, "si", si_attempt["reason"])
+                            result["si_status"] = f"manual_pending ({si_attempt['reason']})"
                     else:
                         result["si_status"] = f"failed ({si_attempt['reason']})"
             except ManualInterventionRequired as e:
-                keep_page = True
-                preserve_manual_page(page, "si", e.reason)
-                result["si_status"] = f"manual_pending ({e.reason})"
+                if is_auto_mode():
+                    scheduled_attempt = await schedule_auto_manual_retry(
+                        ctx,
+                        page,
+                        si_base.with_suffix(".pdf"),
+                        "si",
+                        e.reason,
+                        ref,
+                    )
+                    keep_page = True
+                    result["si_status"] = f"manual_pending ({manual_pending_reason(scheduled_attempt)})"
+                else:
+                    keep_page = True
+                    preserve_manual_page(page, "si", e.reason)
+                    result["si_status"] = f"manual_pending ({e.reason})"
             except Exception as e:
                 result["si_status"] = f"failed ({str(e)[:80]})"
                 print(f"       ✗ SI error: {str(e)[:60]}")
@@ -3996,6 +4051,7 @@ async def close_context_quietly(ctx: Optional[BrowserContext]):
 
 
 async def restart_edge_context(pw, ctx: Optional[BrowserContext], reason: str, ref: Optional[Dict[str, Any]] = None) -> BrowserContext:
+    await cancel_auto_manual_retries(f"session_restart: {reason[:120]}")
     clear_manual_queue(f"session_restart: {reason[:120]}")
     await close_context_quietly(ctx)
     await asyncio.sleep(1.0)
@@ -4077,6 +4133,18 @@ async def main():
             session_restarts = 0
             session_last_error = ""
 
+            if auto_mode:
+                try:
+                    await drain_due_auto_manual_retries(ctx, report, wait=False)
+                except PlaywrightError as e:
+                    err_msg = str(e)[:120]
+                    if is_session_closed_error(e):
+                        print("\n  ↻ Edge 会话在 auto manual retry 阶段关闭，正在重启后继续主循环...")
+                        log_event("auto_manual_queue", "drain", "session_closed", "", err_msg)
+                        ctx = await restart_edge_context(pw, ctx, err_msg, ref)
+                    else:
+                        raise
+
             while True:
                 try:
                     res = await download_one(ctx, ref, project_dir, total)
@@ -4109,6 +4177,18 @@ async def main():
                         )
                     )
                     break
+
+            if auto_mode:
+                try:
+                    await drain_due_auto_manual_retries(ctx, report, wait=False)
+                except PlaywrightError as e:
+                    err_msg = str(e)[:120]
+                    if is_session_closed_error(e):
+                        print("\n  ↻ Edge 会话在 auto manual retry 阶段关闭，正在重启后继续主循环...")
+                        log_event("auto_manual_queue", "drain", "session_closed", "", err_msg)
+                        ctx = await restart_edge_context(pw, ctx, err_msg, ref)
+                    else:
+                        raise
 
             if not auto_mode:
                 try:
@@ -4155,12 +4235,24 @@ async def main():
                 else:
                     raise
 
+        if auto_mode:
+            try:
+                await drain_due_auto_manual_retries(ctx, report, wait=True)
+            except PlaywrightError as e:
+                err_msg = str(e)[:120]
+                if is_session_closed_error(e):
+                    print("\n  ↻ Edge 会话在最终 auto manual retry 阶段关闭，跳过剩余自动重试。")
+                    log_event("auto_manual_queue", "drain", "session_closed_final", "", err_msg)
+                else:
+                    raise
+
         await close_context_quietly(ctx)
 
     # Write the final root report only after the run has closed cleanly. During interrupted
     # runs, the latest run dir plus the actual files on disk are the authoritative artifacts.
     report_path = project_dir / "download_report.csv"
     if report:
+        sync_report_with_existing_files(report, project_dir)
         with open(report_path, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=list(report[0].keys()))
             w.writeheader()
