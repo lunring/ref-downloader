@@ -33,6 +33,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import asyncio
 import base64
+import contextvars
 import csv
 import html as html_lib
 import json
@@ -147,8 +148,15 @@ def _auth_loading_titles() -> tuple:
 DELAY        = 1.0        # seconds between articles
 NAV_TIMEOUT  = 5_000      # page navigation timeout (ms)
 DL_TIMEOUT   = 10_000     # download wait timeout (ms)
+RESPONSE_BODY_TIMEOUT = 8_000
 CAPTCHA_WAIT = 10_000     # 10s — auth walls need re-login, not just waiting
 AUTO_CAPTCHA_WAIT = 15_000
+AUTO_MANUAL_RETRY_WAIT = 60_000
+AUTO_MANUAL_RETRY_TIMEOUT = 20_000
+AUTO_MANUAL_RETRY_MAX_CONCURRENT = 3
+AUTO_MANUAL_RETRY_MAX_PENDING = 8
+AUTO_MANUAL_FINAL_DRAIN_TIMEOUT = 25_000
+PDF_JS_FETCH_TIMEOUT = 20_000
 GENERIC_POPUP_TIMEOUT = 3_500
 MANUAL_QUEUE_LIMIT_DEFAULT = 3
 MANUAL_QUEUE_LIMIT_BY_PUBLISHER = {
@@ -201,20 +209,33 @@ def env_flag(name: str, default: bool = False) -> bool:
         return default
     return value in ("1", "true", "yes", "on")
 
+
+def is_auto_mode() -> bool:
+    return "--auto" in sys.argv
+
+
 # Shared run-level state. `manual_pages` are the live pages still awaiting attention;
 # `manual_retry_pages` temporarily protects the current retry batch from being closed by
-# unrelated page-cleanup logic during mixed publisher queues.
+# unrelated page-cleanup logic during mixed publisher queues. In auto mode,
+# `auto_manual_pages` are delayed retries that must not block the main ref loop.
 RUN_CTX: Dict[str, Any] = {
     "run_dir": None,
     "events_path": None,
     "manual_pages": [],
     "manual_retry_pages": [],
+    "active_main_pages": [],
+    "auto_manual_pages": [],
+    "auto_manual_active_pages": [],
+    "auto_manual_tasks": set(),
+    "auto_manual_results": [],
+    "auto_manual_sem": None,
     "manual_deferred": False,
     "current_ref": None,
     "round_id": None,
     "elsevier_hot_until": 0.0,
     "elsevier_hot_reason": "",
 }
+CURRENT_REF: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar("current_ref", default=None)
 
 PUBLISHER_STRATEGIES: Dict[str, Dict[str, str]] = {
     "acs": {"family": "generic_fallback", "support": "stable", "min_test": "live_or_route_smoke"},
@@ -251,7 +272,7 @@ def now_iso() -> str:
 
 
 def current_ref_meta() -> Dict[str, Any]:
-    ref = RUN_CTX.get("current_ref") or {}
+    ref = CURRENT_REF.get() or RUN_CTX.get("current_ref") or {}
     return {
         "ref_id": ref.get("id"),
         "label": ref.get("label"),
@@ -262,6 +283,40 @@ def current_ref_meta() -> Dict[str, Any]:
 
 def make_attempt(state: str, reason: str = "", size_kb: Optional[int] = None) -> Dict[str, Any]:
     return {"state": state, "reason": reason, "size_kb": size_kb}
+
+
+async def response_body_with_timeout(resp, timeout_ms: int = RESPONSE_BODY_TIMEOUT):
+    return await asyncio.wait_for(resp.body(), timeout=timeout_ms / 1000)
+
+
+def with_auto_retry_result(original_reason: str, retry_attempt: Dict[str, Any]) -> Dict[str, Any]:
+    if retry_attempt["state"] == STATUS_DOWNLOADED:
+        return retry_attempt
+    attempt = make_attempt(STATUS_MANUAL, original_reason)
+    attempt["auto_retry_done"] = True
+    attempt["auto_retry_state"] = retry_attempt["state"]
+    attempt["auto_retry_reason"] = retry_attempt.get("reason", "")
+    return attempt
+
+
+def manual_pending_reason(attempt: Dict[str, Any]) -> str:
+    reason = attempt.get("reason", "")
+    if attempt.get("auto_retry_done"):
+        return (
+            f"{reason}; auto_retry="
+            f"{attempt.get('auto_retry_state', STATUS_FAILED)}:{attempt.get('auto_retry_reason', '')}"
+        )
+    if attempt.get("auto_retry_scheduled"):
+        return f"{reason}; auto_retry=scheduled"
+    if attempt.get("auto_retry_dropped"):
+        return f"{reason}; auto_retry=dropped:{attempt.get('auto_retry_dropped')}"
+    return reason
+
+
+def with_auto_retry_page(original_reason: str, page: Page) -> Dict[str, Any]:
+    attempt = make_attempt(STATUS_MANUAL, original_reason)
+    attempt["auto_retry_page"] = page
+    return attempt
 
 
 def publisher_strategy(publisher: str) -> Dict[str, str]:
@@ -786,6 +841,430 @@ async def close_page_quietly(page: Optional[Page]):
             await page.close()
     except Exception:
         pass
+
+
+# ── auto-manual retry queue ──────────────────────────────────────────────────
+# Background retry queue for manual_pending refs. Refs that hit a transient
+# publisher state (Elsevier popup not settling, viewer capture failed, etc.)
+# get scheduled here instead of stalling the main loop; a worker pool with
+# capped concurrency picks them up after a delay. Empty / inactive until
+# download_one wire-in (Commit 2b) starts calling schedule_auto_manual_retry.
+
+def get_auto_manual_sem() -> asyncio.Semaphore:
+    sem = RUN_CTX.get("auto_manual_sem")
+    if sem is None:
+        sem = asyncio.Semaphore(AUTO_MANUAL_RETRY_MAX_CONCURRENT)
+        RUN_CTX["auto_manual_sem"] = sem
+    return sem
+
+
+def auto_manual_page_count() -> int:
+    clean_auto_manual_pages()
+    return len(RUN_CTX.get("auto_manual_pages") or []) + len(RUN_CTX.get("auto_manual_active_pages") or [])
+
+
+def push_auto_manual_result(item: Dict[str, Any], attempt: Dict[str, Any]):
+    if item.get("result_pushed"):
+        return
+    item["result_pushed"] = True
+    RUN_CTX.setdefault("auto_manual_results", []).append(
+        {
+            "ref": dict(item.get("ref") or {}),
+            "stage": item.get("stage") or "main_pdf",
+            "reason": item.get("reason") or "manual_pending",
+            "dest": str(item.get("dest") or ""),
+            "attempt": dict(attempt),
+        }
+    )
+
+
+async def close_auto_manual_item(item: Dict[str, Any], reason: str, result_reason: str):
+    page = item.get("page")
+    stage = item.get("stage") or "main_pdf"
+    ref = item.get("ref") or {}
+    token = CURRENT_REF.set(ref)
+    try:
+        log_event(stage, "auto_manual_retry_closed", STATUS_MANUAL, item.get("url") or "", reason)
+        push_auto_manual_result(item, make_attempt(STATUS_MANUAL, result_reason))
+        await close_page_quietly(page)
+    finally:
+        CURRENT_REF.reset(token)
+
+
+async def enforce_auto_manual_capacity() -> bool:
+    pending = clean_auto_manual_pages()
+    active = RUN_CTX.get("auto_manual_active_pages") or []
+    if len(pending) + len(active) < AUTO_MANUAL_RETRY_MAX_PENDING:
+        return True
+
+    if pending:
+        victim = sorted(pending, key=lambda item: float(item.get("created_at") or 0.0))[0]
+        try:
+            RUN_CTX["auto_manual_pages"].remove(victim)
+        except ValueError:
+            pass
+        task = victim.get("task")
+        if task and not task.done():
+            task.cancel()
+        await close_auto_manual_item(
+            victim,
+            f"queue_full max_pending={AUTO_MANUAL_RETRY_MAX_PENDING}",
+            "auto_retry_overflow_closed",
+        )
+        return len(RUN_CTX.get("auto_manual_pages") or []) + len(active) < AUTO_MANUAL_RETRY_MAX_PENDING
+
+    return False
+
+
+async def schedule_auto_manual_retry(
+    ctx: BrowserContext,
+    page: Page,
+    dest: Path,
+    stage: str,
+    reason: str,
+    ref: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not page or page.is_closed():
+        attempt = make_attempt(STATUS_MANUAL, reason)
+        attempt["auto_retry_dropped"] = "page_closed"
+        return attempt
+
+    if not await enforce_auto_manual_capacity():
+        log_event(stage, "auto_manual_retry_rejected", STATUS_MANUAL, page.url, f"queue_full max_pending={AUTO_MANUAL_RETRY_MAX_PENDING}")
+        await close_page_quietly(page)
+        attempt = make_attempt(STATUS_MANUAL, reason)
+        attempt["auto_retry_dropped"] = "queue_full"
+        return attempt
+
+    now = time.monotonic()
+    due_at = time.monotonic() + (AUTO_MANUAL_RETRY_WAIT / 1000)
+    item = {
+        "page": page,
+        "dest": dest,
+        "stage": stage,
+        "reason": reason,
+        "ref": dict(ref),
+        "due_at": due_at,
+        "created_at": now,
+        "url": page.url,
+    }
+    RUN_CTX["auto_manual_pages"].append(item)
+    task = asyncio.create_task(auto_manual_retry_worker(ctx, item))
+    item["task"] = task
+    RUN_CTX.setdefault("auto_manual_tasks", set()).add(task)
+    log_event(
+        stage,
+        "auto_manual_retry_scheduled",
+        STATUS_MANUAL,
+        page.url,
+        f"{reason} wait_ms={AUTO_MANUAL_RETRY_WAIT} timeout_ms={AUTO_MANUAL_RETRY_TIMEOUT}",
+    )
+    attempt = make_attempt(STATUS_MANUAL, reason)
+    attempt["auto_retry_scheduled"] = True
+    return attempt
+
+
+async def run_auto_manual_retry_item(ctx: BrowserContext, item: Dict[str, Any]) -> Dict[str, Any]:
+    page = item.get("page")
+    stage = item.get("stage") or "main_pdf"
+    reason = item.get("reason") or "manual_pending"
+    dest = item.get("dest")
+    ref = item.get("ref") or {}
+    token = CURRENT_REF.set(ref)
+    try:
+        if not page or page.is_closed():
+            attempt = make_attempt(STATUS_FAILED, "auto_manual_page_closed")
+            log_event(stage, "auto_manual_retry_complete", attempt["state"], "", attempt["reason"])
+            return attempt
+
+        log_event(stage, "auto_manual_retry_due", "start", page.url, reason)
+        attempt = await auto_retry_manual_page_once(page, ctx, dest, stage, reason, wait_ms=0)
+        log_event(
+            stage,
+            "auto_manual_retry_complete",
+            attempt["state"],
+            page.url if not page.is_closed() else "",
+            attempt.get("reason", ""),
+        )
+        return attempt
+    finally:
+        await close_page_quietly(page)
+        CURRENT_REF.reset(token)
+
+
+def clean_auto_manual_pages() -> List[Dict[str, Any]]:
+    live_items = []
+    for item in RUN_CTX.get("auto_manual_pages", []):
+        page = item.get("page")
+        if page and not page.is_closed():
+            live_items.append(item)
+    RUN_CTX["auto_manual_pages"] = live_items
+    active_items = []
+    for item in RUN_CTX.get("auto_manual_active_pages", []):
+        page = item.get("page")
+        task = item.get("task")
+        if page and not page.is_closed() and task and not task.done():
+            active_items.append(item)
+    RUN_CTX["auto_manual_active_pages"] = active_items
+    return live_items
+
+
+async def auto_manual_retry_worker(ctx: BrowserContext, item: Dict[str, Any]):
+    page = item.get("page")
+    stage = item.get("stage") or "main_pdf"
+    ref = item.get("ref") or {}
+    token = CURRENT_REF.set(ref)
+    attempt = make_attempt(STATUS_MANUAL, "auto_retry_not_run")
+    try:
+        delay = max(0.0, float(item.get("due_at") or 0.0) - time.monotonic())
+        if delay:
+            await asyncio.sleep(delay)
+
+        try:
+            RUN_CTX["auto_manual_pages"].remove(item)
+        except ValueError:
+            pass
+        RUN_CTX.setdefault("auto_manual_active_pages", []).append(item)
+
+        async with get_auto_manual_sem():
+            attempt = await asyncio.wait_for(
+                run_auto_manual_retry_item(ctx, item),
+                timeout=AUTO_MANUAL_RETRY_TIMEOUT / 1000,
+            )
+    except asyncio.CancelledError:
+        attempt = make_attempt(STATUS_MANUAL, "auto_retry_cancelled")
+        log_event(stage, "auto_manual_retry_cancelled", STATUS_MANUAL, item.get("url") or "", "cancelled")
+        raise
+    except asyncio.TimeoutError:
+        attempt = make_attempt(STATUS_MANUAL, f"auto_retry_timeout_{AUTO_MANUAL_RETRY_TIMEOUT // 1000}s")
+        log_event(stage, "auto_manual_retry_timeout", STATUS_MANUAL, item.get("url") or "", f"timeout_ms={AUTO_MANUAL_RETRY_TIMEOUT}")
+    except Exception as e:
+        state = "session_closed" if is_session_closed_error(e) else STATUS_FAILED
+        attempt = make_attempt(STATUS_FAILED, "auto_retry_exception")
+        log_event(stage, "auto_manual_retry_exception", state, item.get("url") or "", str(e)[:120])
+    finally:
+        push_auto_manual_result(item, attempt)
+        for bucket in ("auto_manual_pages", "auto_manual_active_pages"):
+            try:
+                RUN_CTX[bucket].remove(item)
+            except (KeyError, ValueError):
+                pass
+        await close_page_quietly(page)
+        CURRENT_REF.reset(token)
+
+
+def collect_auto_manual_tasks():
+    tasks = RUN_CTX.setdefault("auto_manual_tasks", set())
+    done = {task for task in tasks if task.done()}
+    tasks.difference_update(done)
+    for task in done:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log_event("auto_manual_queue", "task_result", STATUS_FAILED, "", str(e)[:120])
+
+
+def materialize_auto_retry_result(report: List[Dict[str, Any]], result: Dict[str, Any]):
+    ref = result.get("ref") or {}
+    if not ref.get("id"):
+        return
+    stage = result.get("stage") or "main_pdf"
+    original_reason = result.get("reason") or "manual_pending"
+    attempt = result.get("attempt") or make_attempt(STATUS_FAILED, "auto_retry_missing_result")
+
+    row = None
+    for existing in report:
+        if int(existing.get("id") or 0) == int(ref["id"]):
+            row = existing
+            break
+    if row is None:
+        row = finalize_report_row(
+            dict(
+                id=ref["id"],
+                label=ref.get("label", ""),
+                doi=ref.get("doi", ""),
+                publisher=ref.get("publisher", ""),
+                pdf_status="skipped",
+                si_status="not_attempted",
+                pdf_history="",
+                si_history="",
+                retry_count=0,
+                publisher_strategy=publisher_strategy(ref.get("publisher", ""))["family"],
+                publisher_support=publisher_strategy(ref.get("publisher", ""))["support"],
+                publisher_min_test=publisher_strategy(ref.get("publisher", ""))["min_test"],
+            )
+        )
+        report.append(row)
+
+    row["retry_count"] = int(row.get("retry_count") or 0) + 1
+    status_key = "pdf_status" if stage == "main_pdf" else "si_status"
+    history_key = "pdf_history" if stage == "main_pdf" else "si_history"
+    if attempt.get("state") == STATUS_DOWNLOADED:
+        row[status_key] = f"downloaded ({attempt.get('size_kb') or 0} KB)"
+    else:
+        current_status = row.get(status_key) or ""
+        if any(token in current_status for token in ("downloaded", "already_exists", "non_pdf_asset_saved")):
+            return
+        retry_state = attempt.get("state") or STATUS_FAILED
+        retry_reason = attempt.get("reason") or "unknown"
+        row[status_key] = f"manual_pending ({original_reason}; auto_retry={retry_state}:{retry_reason})"
+    row[history_key] = append_history_text(row.get(history_key, ""), row[status_key])
+
+
+def collect_auto_manual_retry_results(report: List[Dict[str, Any]]):
+    collect_auto_manual_tasks()
+    results = RUN_CTX.get("auto_manual_results") or []
+    RUN_CTX["auto_manual_results"] = []
+    for result in results:
+        materialize_auto_retry_result(report, result)
+
+
+async def drain_due_auto_manual_retries(
+    ctx: BrowserContext,
+    report: Optional[List[Dict[str, Any]]] = None,
+    *,
+    wait: bool = False,
+):
+    if wait:
+        tasks = {task for task in RUN_CTX.get("auto_manual_tasks", set()) if not task.done()}
+        if tasks:
+            done, pending = await asyncio.wait(
+                tasks,
+                timeout=AUTO_MANUAL_FINAL_DRAIN_TIMEOUT / 1000,
+            )
+            if pending:
+                log_event(
+                    "auto_manual_queue",
+                    "final_drain",
+                    STATUS_MANUAL,
+                    "",
+                    f"timeout_ms={AUTO_MANUAL_FINAL_DRAIN_TIMEOUT} cancelling={len(pending)}",
+                )
+                for task in pending:
+                    task.cancel()
+                done_after_cancel, still_pending = await asyncio.wait(pending, timeout=5.0)
+                if still_pending:
+                    log_event("auto_manual_queue", "final_cancel", STATUS_FAILED, "", f"still_pending={len(still_pending)}")
+    collect_auto_manual_tasks()
+    if report is not None:
+        collect_auto_manual_retry_results(report)
+
+
+async def cancel_auto_manual_retries(reason: str, report: Optional[List[Dict[str, Any]]] = None):
+    for item in list(RUN_CTX.get("auto_manual_pages") or []):
+        try:
+            RUN_CTX["auto_manual_pages"].remove(item)
+        except ValueError:
+            pass
+        await close_auto_manual_item(item, reason, f"auto_retry_cancelled:{reason[:60]}")
+
+    tasks = {task for task in RUN_CTX.get("auto_manual_tasks", set()) if not task.done()}
+    if tasks:
+        for task in tasks:
+            task.cancel()
+        done_after_cancel, still_pending = await asyncio.wait(tasks, timeout=5.0)
+        if still_pending:
+            log_event("auto_manual_queue", "cancel", STATUS_FAILED, "", f"still_pending={len(still_pending)} reason={reason[:80]}")
+    collect_auto_manual_tasks()
+    if report is not None:
+        collect_auto_manual_retry_results(report)
+
+
+def sync_report_with_existing_files(report: List[Dict[str, Any]], project_dir: Path):
+    for row in report:
+        ref = {
+            "id": int(row["id"]),
+            "label": row["label"],
+            "doi": row.get("doi", ""),
+            "publisher": row.get("publisher", ""),
+        }
+        pdf_dest, si_base = ref_output_paths(ref, project_dir)
+        if pdf_dest.exists() and not any(x in (row.get("pdf_status") or "") for x in ("downloaded", "already_exists")):
+            size_kb = pdf_dest.stat().st_size // 1024
+            row["pdf_status"] = f"downloaded ({size_kb} KB)"
+            row["pdf_history"] = append_history_text(row.get("pdf_history", ""), row["pdf_status"])
+
+        existing_si = find_existing_si_asset(si_base)
+        si_status = row.get("si_status") or ""
+        if existing_si and not any(x in si_status for x in ("downloaded", "already_exists", "non_pdf_asset_saved")):
+            size_kb = existing_si.stat().st_size // 1024
+            if existing_si.suffix.lower() == ".pdf":
+                row["si_status"] = f"downloaded ({size_kb} KB)"
+            else:
+                row["si_status"] = f"non_pdf_asset_saved ({existing_si.suffix.lower()}, {size_kb} KB)"
+            row["si_history"] = append_history_text(row.get("si_history", ""), row["si_status"])
+
+
+async def auto_retry_manual_page_once(
+    page: Page,
+    ctx: BrowserContext,
+    dest: Path,
+    stage: str,
+    reason: str,
+    wait_ms: int = AUTO_MANUAL_RETRY_WAIT,
+) -> Dict[str, Any]:
+    """In --auto, give a manual/challenge page one short chance, then let caller close it."""
+    if wait_ms > 0:
+        log_event(stage, "auto_manual_retry_wait", "start", page.url, f"{reason} wait_ms={wait_ms}")
+        try:
+            await page.wait_for_timeout(wait_ms)
+        except PlaywrightError as e:
+            if is_session_closed_error(e):
+                raise
+            log_event(stage, "auto_manual_retry_wait", STATUS_FAILED, "", str(e)[:120])
+            return make_attempt(STATUS_FAILED, "auto_manual_page_closed")
+        except Exception as e:
+            if is_session_closed_error(e):
+                raise
+            log_event(stage, "auto_manual_retry_wait", STATUS_FAILED, "", str(e)[:120])
+            return make_attempt(STATUS_FAILED, "auto_manual_page_closed")
+
+    if page.is_closed():
+        log_event(stage, "auto_manual_retry", STATUS_FAILED, "", "page_closed")
+        return make_attempt(STATUS_FAILED, "auto_manual_page_closed")
+
+    try:
+        barrier = await inspect_access_barrier(page)
+        if barrier:
+            log_event(stage, "auto_manual_retry", STATUS_MANUAL, barrier["url"], barrier["reason"])
+            return make_attempt(STATUS_MANUAL, barrier["reason"])
+
+        log_event(stage, "auto_manual_retry", "start", page.url, reason)
+        viewer_attempt = await fetch_pdf_from_viewer(page, ctx, dest, stage)
+        if viewer_attempt["state"] != STATUS_FAILED:
+            return viewer_attempt
+
+        current_url = page.url
+        if current_url and current_url != "about:blank":
+            direct_attempt = await try_direct_pdf(
+                page,
+                ctx,
+                current_url,
+                dest,
+                stage=stage,
+                allow_navigation=True,
+                close_other_pages=False,
+            )
+            if direct_attempt["state"] != STATUS_FAILED:
+                return direct_attempt
+
+        log_event(stage, "auto_manual_retry", STATUS_FAILED, page.url, "no_pdf_after_retry")
+        return make_attempt(STATUS_FAILED, "auto_retry_no_pdf")
+    except ManualInterventionRequired as e:
+        log_event(stage, "auto_manual_retry", STATUS_MANUAL, page.url, e.reason)
+        return make_attempt(STATUS_MANUAL, e.reason)
+    except PlaywrightError as e:
+        if is_session_closed_error(e):
+            raise
+        log_event(stage, "auto_manual_retry", STATUS_FAILED, page.url if not page.is_closed() else "", str(e)[:120])
+        return make_attempt(STATUS_FAILED, "auto_retry_exception")
+    except Exception as e:
+        if is_session_closed_error(e):
+            raise
+        log_event(stage, "auto_manual_retry", STATUS_FAILED, page.url if not page.is_closed() else "", str(e)[:120])
+        return make_attempt(STATUS_FAILED, "auto_retry_exception")
 
 
 def manual_resume_wait_ms(publisher: str) -> int:
