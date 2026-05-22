@@ -3,7 +3,7 @@
 > **Stop losing an afternoon to chasing dozens of reference PDFs by hand.**
 > One DOI in, every reference PDF out — using your existing institutional access.
 
-[![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-orange.svg)](CHANGELOG.md)
+[![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-orange.svg)](CHANGELOG.md)
 [![Status: beta](https://img.shields.io/badge/status-beta-orange.svg)](#known-limitations)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -11,7 +11,7 @@
 
 [中文完整文档 / Full Chinese version](README.zh.md)
 
-> **Status: beta (v0.2.0).** Windows + Microsoft Edge verified path. macOS / Linux / Chromium untested. Expect rough edges around supplementary downloads and publisher-site changes. PR-worthy issues welcome.
+> **Status: beta (v0.3.0).** Windows + Microsoft Edge verified path. macOS / Linux / Chromium untested. Expect rough edges around supplementary downloads and publisher-site changes. PR-worthy issues welcome.
 
 > **Heads up — not a paywall bypass.** ref-downloader uses _your_ institutional access. If your university or organization subscribes to a journal, those refs work. If they don't, those refs become `manual_pending` for you to follow up on by hand.
 
@@ -77,7 +77,7 @@ PDFs land in:      ./jacs.5c05017_refs/jacs.5c05017/
 
 - **vs. Zotero's _Find Available PDF_** — walks one paper at a time and silently gives up at SSO redirects. ref-downloader walks the whole reference list at once and treats SSO as a configurable step instead of a dead end.
 - **vs. scihub-style tools** — don't carry your institutional license, so paywalled refs you _legitimately_ have access to just fail. ref-downloader uses your authenticated browser session, so subscriptions you already pay for actually count.
-- **vs. generic web scrapers** — don't know Wiley needs PDFDirect, Elsevier needs a viewer click, or AIP serves a Chinese loading page first. ref-downloader has 17+ publisher-specific paths plus hot-session retry for Elsevier.
+- **vs. generic web scrapers** — don't know Wiley needs PDFDirect, Elsevier needs a viewer click, or AIP serves a Chinese loading page first. ref-downloader has 17+ publisher-specific paths plus Elsevier popup state machine + `--auto` mode retry queue (manual-pending refs get a second async attempt 60s later, hot-session preserved).
 
 ## Quick start
 

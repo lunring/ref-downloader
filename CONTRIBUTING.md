@@ -153,11 +153,20 @@ prompts you for the minimum useful info:
 ## Code style
 
 - Match existing style; no large reformats while adding a feature.
-- `download_refs.py` is intentionally a single 3000+ line file with
+- `download_refs.py` is intentionally a single ~4,300 line file with
   carefully tuned timing/retry constants. Don't restructure it unilaterally;
-  open an issue first if you think it needs splitting.
+  open an issue first if you think it needs splitting. A module split
+  (`barriers.py` / `pdf_capture.py` / `publishers/elsevier.py` /
+  `manual_retry.py` / `reporting.py`) is on the v0.4 candidate list.
 - Keep public interfaces of `_config.py` stable — all four scripts depend on
   the `Config` dataclass shape.
+- **Touching `--auto` mode** (v0.3.0+): the `is_auto_mode()` gate +
+  `auto_manual_retry_*` helpers form a separate code path. Any new
+  `manual_pending` site needs to decide explicitly whether to call
+  `schedule_auto_manual_retry` (auto mode) or `preserve_manual_page`
+  (interactive). Forgetting to wire one in means refs that hit that site
+  in auto mode silently skip the retry queue. See `architecture.md`
+  "Auto-mode manual-retry queue".
 
 ## CLI behavior nuances
 

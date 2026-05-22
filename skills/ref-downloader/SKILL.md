@@ -52,7 +52,7 @@ sequential 3-stage pipeline (`extract_refs.py` → `validate_refs.py` →
 
 **Useful flags**:
 - `--yes` — non-interactive (CI/batch), overwrite prompts default-yes
-- `--auto` — forwarded to `download_refs.py`: skip "press Enter" confirm + shorter challenge wait
+- `--auto` — forwarded to `download_refs.py`: skip "press Enter" confirm + shorter challenge wait + async retry queue for `manual_pending` refs (60s delay, single retry, max 3 concurrent). Use for CI / overnight runs; not for sessions where you want to drive captchas yourself.
 - `--output-dir <path>` — override default output location
 - `--config <path>` — alternate TOML config (overrides `config.local.toml`)
 
@@ -87,7 +87,7 @@ the root `download_report.csv` may be stale. Trust the latest
 |---|---|---|
 | `manual_pending (auth_redirect)` | Bounced to institution SSO | User signs in via live Edge tab; re-run (incremental skips done refs) |
 | `manual_pending (challenge_timeout)` | Cloudflare / publisher challenge unsolved in time | Re-run interactively; solve captcha when prompted |
-| `manual_pending (elsevier_crasolve_shell)` | Elsevier viewer stuck in transition | Hot-session auto-retry usually picks it up; else manual click in live page |
+| `manual_pending (elsevier_crasolve_shell)` | Elsevier viewer stuck in transition | In `--auto` mode the async retry queue picks it up ~60s later; in interactive mode the hot-session retry usually catches it, else manual click in live page |
 | `failed (auto)` | Generic auto path failed | Check `events.jsonl` for that ref; may need a publisher-specific patch |
 | `ignored (ignored_institution_access)` | DOI listed in `[institution].ignored_access_dois` | Skip-by-design; remove from config to retry |
 | Edge won't launch | Background `msedge.exe` still holding profile | Kill all `msedge.exe` in Task Manager, re-run |

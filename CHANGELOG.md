@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-05-23
+
+### Added — Elsevier popup state machine
+
+- Four new helpers replace the old single-shot popup capture in `try_elsevier_pdf`:
+  - `find_elsevier_pdf_selector` — picks the right "View PDF" selector + describes which DOM path matched (for events.jsonl)
+  - `wait_for_elsevier_pdf_button_ready` — replaces the 2.5s hard sleep with bounded polling on actual button readiness (default 8–10s)
+  - `wait_for_elsevier_popup_after_click` — 15s polling for the popup to actually navigate away from `about:blank`; re-clicks at 10s if the popup is still blank
+  - `wait_for_elsevier_popup_surface_ready` — 20s settle window for the viewer surface to finish hydrating before PDF capture
+- Six new constants govern the timings (`ELSEVIER_POPUP_POLL_MS=15000`, `ELSEVIER_POPUP_SETTLE_MS=20000`, `ELSEVIER_POPUP_CAPTURE_WAIT_MS=8000`, `ELSEVIER_PRE_CLICK_MIN_WAIT_MS=8000`, `ELSEVIER_PRE_CLICK_MAX_WAIT_MS=10000`, `ELSEVIER_TRANSIENT_POPUP_REASONS`).
+- Net effect: fewer `manual_pending (elsevier_*)` refs that turned out to be transient popup races; the script now waits for actual UI state instead of fixed sleeps.
+
+### Added — auto-mode manual_pending retry queue
+
+- New asynchronous retry queue scheduled when a ref hits `manual_pending` in `--auto` mode (gated by `is_auto_mode()`; non-auto mode is unchanged).
+- Constants: `AUTO_MANUAL_RETRY_WAIT=60_000` (delay before retry), `AUTO_MANUAL_RETRY_TIMEOUT=20_000` (single-try timeout), `AUTO_MANUAL_RETRY_MAX_CONCURRENT=3`, `AUTO_MANUAL_RETRY_MAX_PENDING=8`.
+- Workers: `schedule_auto_manual_retry` → `auto_manual_retry_worker` → `run_auto_manual_retry_item` → `auto_retry_manual_page_once`. Drained at three points: pre-`download_one`, post-`download_one`, and end-of-run (with `wait=True`).
+- `CURRENT_REF` `contextvars.ContextVar` carries per-ref context across async hops so retries can attribute events to the right ref.
+- `sync_report_with_existing_files` reconciles the in-memory report with the project directory before writing `download_report.csv`, picking up retries that finished after the main loop printed status.
+- 11 wire-in sites: `restart_edge_context` (cancellation), `download_one` × 3 (gate manual_pending paths through the queue), `try_click_pdf.inspect_new_pdf_page` × 2, `try_browser_pdf_navigation_candidate` × 1, main loop drains × 3 + sync × 1.
+
+### Behavioral change in `--auto` mode
+
+- **Previously**: `--auto` produced `manual_pending` for any ref that needed institutional click-through or popup retry; the run ended without revisiting them.
+- **Now**: same `manual_pending` refs are queued for a single asynchronous retry attempt while the main loop continues; refs that succeed on retry update the report to `downloaded`. Interactive (non-`--auto`) mode is unchanged.
+- Practical impact: `--auto` is now appropriate for CI / overnight runs where Elsevier's `crasolve_shell` transitions or AIP loading pages may resolve a minute later.
+
+### Changed
+
+- `download_refs.py` grew from ~3,500 to ~4,300 lines. The retry-queue + popup-state-machine constants are at the top of the file alongside existing timing constants; helpers live mid-file before `download_one`.
+
+### Migration note
+
+No config or CLI changes. If you previously avoided `--auto` because it skipped retries, reconsider — that behavior is no longer accurate. Default interactive mode is unchanged.
+
+### Known follow-ups (deferred to a future release)
+
+- `response_body_with_timeout` and `with_auto_retry_result` are present but unused (dead carry-over from staged commits); harmless, scheduled for removal.
+- Class-based `AutoManualRetryManager` refactor + module split (`barriers.py` / `pdf_capture.py` / `publishers/elsevier.py` / `manual_retry.py` / `reporting.py`).
+
 ## [0.2.0] — 2026-05-11
 
 ### Changed (breaking — install path)

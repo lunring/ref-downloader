@@ -45,7 +45,7 @@ we are in the download path:
 | Publisher | Strategy | Notes |
 |---|---|---|
 | `wiley` | `specialized_wiley` | Opens the article page, then attempts `pdfdirect` from the page context. PDF main path is reliable; SI is the weakest area in the system. |
-| `elsevier` | `specialized_elsevier` | Article page → `View PDF` as popup/new-tab; reuses live page + tokenized `main.pdf` candidates; uses a "hot session" auto-retry for transient `crasolve_shell` / `viewer_capture_failed` states. |
+| `elsevier` | `specialized_elsevier` | Article page → `View PDF` as popup/new-tab; reuses live page + tokenized `main.pdf` candidates. v0.3.0 added a popup state machine (`wait_for_elsevier_pdf_button_ready` / `wait_for_elsevier_popup_after_click` / `wait_for_elsevier_popup_surface_ready`) that polls for actual UI readiness instead of fixed sleeps, and re-clicks at 10s if the popup is still on `about:blank`. Hot-session auto-retry covers `crasolve_shell` / `viewer_capture_failed` in interactive mode; `--auto` mode adds an async retry queue (60s later) for the same transient states. |
 | `aip`, `avs` | `specialized_loading_wait` | Pubs.aip.org serves a `请稍候` (Please wait) loading page; the script waits up to 15s for it to resolve before searching for PDF links. The loading-page string is hardcoded and intentional — see CONTRIBUTING.md. |
 
 ### `generic_fallback` (works via the common pattern)
@@ -100,9 +100,11 @@ often work, but timing or selector tuning may be needed for full reliability.
   empirically yields empty SI for Wiley / ACS — keep headed.
 - **Wiley**: main PDF path is corrected, but auto success depends on the
   challenge state of the live session.
-- **Elsevier**: hot-session automation is strong; rare cases stop at
-  `manual_pending`, especially when `crasolve_shell` doesn't transition into
-  the viewer.
+- **Elsevier**: hot-session automation is strong in interactive mode; the
+  popup state machine (v0.3.0) handles most transient `about:blank` /
+  unready-button cases. Refs that still hit `manual_pending (elsevier_*)`
+  in `--auto` mode get a single async retry attempt ~60s later — see
+  [architecture.md](architecture.md#auto-mode-manual-retry-queue-v030).
 - **Annual Reviews**: `href="#"` JS-driven navigation is now covered by the
   generic popup/viewer hotpath; no longer requires explicit `target="_blank"`.
 - **Wiley SI**: `downloadSupplement` path has a longer post-challenge wait

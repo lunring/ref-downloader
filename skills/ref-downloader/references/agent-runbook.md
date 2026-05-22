@@ -254,25 +254,29 @@ cd "<OUTPUT_DIR>"
 python "<SKILL_DIR>/scripts/download_refs.py" <PROJECT_NAME>
 ```
 
-**Default mode is interactive**; do not prepend `--auto` blindly.
+**Default mode is interactive**. Pick `--auto` only when no one is watching the run (CI, overnight batch, sleep run); otherwise stay interactive so you can drive captchas and SSO yourself.
 
-The `--auto` flag:
-- Skips manual Enter-to-confirm
-- Uses 15s challenge wait (vs interactive 10s)
-- Suitable for "quick smoke run to see overall success rate"
-- **Not suitable** when human intervention for captchas / institutional logins / hot sessions is expected
+The `--auto` flag (v0.3.0+):
+- Skips manual Enter-to-confirm.
+- Uses 15s challenge wait (vs interactive 10s).
+- **Manual-pending refs get queued for a single asynchronous retry attempt** ~60s later (gated by `is_auto_mode()` in `download_refs.py`). The main loop does not block — it keeps downloading other refs while the retry queue drains in the background. Up to 3 retries run concurrently, up to 8 pending. Refs that succeed on retry update the report to `downloaded`; refs that still fail keep their `manual_pending (...)` status.
+- Suitable when you genuinely cannot click — and you accept that a captcha/SSO ref that needs human input will stay `manual_pending` permanently in this run.
+- **Not suitable** when you _can_ click; interactive mode pauses for you and gets higher success rates on Elsevier / Wiley / institutional-SSO refs.
 
 Behavioral details:
 - Launches **real Microsoft Edge persistent profile** at `[browser].edge_profile_dir` (or `%LOCALAPPDATA%\Microsoft\Edge\User Data` default on Windows).
 - Extensions stay enabled by default; set `[browser].disable_extensions = true` or env `REF_DOWNLOADER_DISABLE_EXTENSIONS=1` to disable.
 - Interactive mode keeps `manual_pending` pages open for the retry loop.
-- Main-loop "small-queue immediate flush":
+- Main-loop "small-queue immediate flush" (interactive mode):
   - **Elsevier**: first `manual_pending` triggers an immediate prompt + retry, leveraging hot session.
   - After Elsevier challenge is solved, subsequent Elsevier transient states (`crasolve shell`, `viewer_capture_failed`) auto-retry once in the hot window.
   - **Other publishers**: accumulate to a small queue limit before prompting.
+- Auto-mode async retry queue (separate mechanism, only active under `--auto`):
+  - Drained at three points in `main`: before each `download_one`, after each `download_one`, and at end-of-run (with `wait=True`).
+  - Cancelled on `restart_edge_context` (Edge session crash) so retries don't fire against a dead context.
+  - `sync_report_with_existing_files` reconciles the in-memory report with files on disk before writing `download_report.csv`, picking up successes that finished mid-loop.
 - If Edge session crashes mid-run, the script auto-restarts once and only retries the current ref.
 - If a ref entered the PDF viewer but auto-save missed it, manual retry prefers the **current live page** over re-navigating to the article.
-- `--auto` skips the retry loop; suited for "pure auto smoke runs", not human-in-the-loop work.
 
 **Expected output**:
 - PDF files saved to `<OUTPUT_DIR>/<PROJECT_NAME>/`

@@ -3,7 +3,7 @@
 > **别再花一下午追几十篇参考文献 PDF。**
 > 输入一个 DOI，全部参考文献自动到手——用你已有的机构访问权。
 
-[![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-orange.svg)](CHANGELOG.md)
+[![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-orange.svg)](CHANGELOG.md)
 [![Status: beta](https://img.shields.io/badge/status-beta-orange.svg)](#已知限制)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -11,7 +11,7 @@
 
 [English full version](README.md)
 
-> **状态：beta (v0.2.0)。** 仅在 Windows + Microsoft Edge 验证过。macOS / Linux / Chromium 未测试。SI 下载和出版商页面变动是当前最容易出问题的地方。欢迎提 issue / PR。
+> **状态：beta (v0.3.0)。** 仅在 Windows + Microsoft Edge 验证过。macOS / Linux / Chromium 未测试。SI 下载和出版商页面变动是当前最容易出问题的地方。欢迎提 issue / PR。
 
 > **重要——不是付费墙绕过工具。** ref-downloader 用的是 _你_ 的机构访问权。如果你的学校/单位订阅了某期刊，那条参考文献就能下；如果没订阅，那条会标 `manual_pending` 等你手动跟进。
 
@@ -77,7 +77,7 @@ PDFs land in:      ./jacs.5c05017_refs/jacs.5c05017/
 
 - **vs. Zotero 的 _Find Available PDF_** —— 它一篇一篇走，碰到 SSO 跳转就放弃。ref-downloader 整个参考列表批量走，把 SSO 跳转当成可配置步骤而不是死路。
 - **vs. scihub 类工具** —— 不带你的机构 license，本来你 _合法_ 有权限的付费内容也直接失败。ref-downloader 复用你浏览器里的认证会话，你已经付费的订阅真的算数。
-- **vs. 通用网络爬虫** —— 不知道 Wiley 要走 PDFDirect、Elsevier 要点 viewer、AIP 服务器先返中文加载页。ref-downloader 内置 17+ 出版商专用路径 + Elsevier 热会话重试。
+- **vs. 通用网络爬虫** —— 不知道 Wiley 要走 PDFDirect、Elsevier 要点 viewer、AIP 服务器先返中文加载页。ref-downloader 内置 17+ 出版商专用路径 + Elsevier popup 状态机 + `--auto` 模式异步重试队列（manual_pending 60 秒后自动重试一次，复用热会话）。
 
 ## 快速开始
 

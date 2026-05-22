@@ -98,7 +98,7 @@ this tool, not your daily-driver).
 
 ## Per-publisher strategies
 
-`download_refs.py` is one large file (~3,400 lines) with a strategy table
+`download_refs.py` is one large file (~4,300 lines) with a strategy table
 in `PUBLISHER_STRATEGIES`. Three tiers:
 
 - **specialized** — Wiley PDFDirect, Elsevier viewer + crasolve hot-session
@@ -119,6 +119,51 @@ Why one big file:
 
 A future refactor _may_ split this once the publishers' shapes are stable,
 but only with full end-to-end smoke regression on every supported publisher.
+
+## Auto-mode manual-retry queue (v0.3.0)
+
+`--auto` mode has a fundamentally different shape from interactive mode for
+`manual_pending` refs. Interactive mode pauses the main loop and asks the
+user to click captcha / SSO; auto mode cannot pause, so instead it queues
+the ref for a single asynchronous retry attempt and lets the main loop
+continue.
+
+Mechanism (all in `download_refs.py`):
+
+- `is_auto_mode()` — single source of truth, checks `sys.argv` for `--auto`.
+  Every callsite that needs to decide "queue vs preserve_manual_page" gates
+  on this. Non-auto mode is bit-identical to v0.2.x.
+- `CURRENT_REF: contextvars.ContextVar` — per-ref context that survives async
+  hops, so retries attribute their events to the right ref in `events.jsonl`.
+- Constants (top of file, intentional knobs):
+  - `AUTO_MANUAL_RETRY_WAIT = 60_000` — wait before retrying (gives the
+    publisher's transient state time to clear; e.g. Elsevier `crasolve_shell`
+    typically transitions within 30-60s).
+  - `AUTO_MANUAL_RETRY_TIMEOUT = 20_000` — single-try timeout. Short on
+    purpose: if the second attempt also hangs, the ref stays
+    `manual_pending` for the user to handle.
+  - `AUTO_MANUAL_RETRY_MAX_CONCURRENT = 3` — async semaphore cap. Limits
+    pressure on Edge / publisher when many refs queue at once.
+  - `AUTO_MANUAL_RETRY_MAX_PENDING = 8` — backpressure cap. Beyond this,
+    new manual_pending refs are not queued and stay as-is for the user.
+- Drain points in `main()`:
+  - Pre-`download_one`: drains any retries that have aged past their wait.
+  - Post-`download_one`: same, plus catches the just-finished ref's possible
+    queued retry siblings.
+  - End-of-run with `wait=True`: blocks until all in-flight retries finish
+    before reporting.
+- `restart_edge_context` cancels pending retries first; firing a retry
+  against a dead `BrowserContext` would crash mid-loop.
+- `sync_report_with_existing_files` reconciles the in-memory report with
+  PDFs that landed on disk during retries, immediately before writing
+  `download_report.csv`. Without this, a ref that succeeded on retry could
+  show as `manual_pending` in the CSV even though its PDF is sitting in
+  the project directory.
+
+Design tension: the queue duplicates some logic from the existing
+interactive small-queue flush. Splitting them out into a single class
+(`AutoManualRetryManager`) is a documented v0.4 candidate, gated on
+real-world feedback that the current shape needs it.
 
 ## Institution-aware SSO detection
 
